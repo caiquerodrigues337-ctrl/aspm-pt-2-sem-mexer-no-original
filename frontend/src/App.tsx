@@ -36,13 +36,25 @@ import {
 import logoHeader from './logo_comprida.jpeg';
 import bgHero from './tela_inicial.jpeg';
 
+import {
+  iniciarScan,
+  buscarFindings,
+  type BackendFinding,
+  type ScanResponse,
+} from './api/pride';
+
 interface Finding {
+  id: string;
+  repoUrl: string;
+  fonte: string;
+  ruleId: string;
   arquivo: string;
-  linha: number | string;
+  linha: number;
   severidade: string;
-  prideScore: number | string;
+  prideScore: number;
   problema: string;
   fixIa: string;
+  fixValidado: boolean | null;
 }
 
 interface UserProfile {
@@ -67,6 +79,34 @@ const getSeverityColorClass = (sev: string) => {
   if (s === 'baixo' || s === 'low') return 'text-sky-400 font-bold';
   return 'text-slate-300';
 };
+
+const getSourceLabel = (fonte: string) => {
+  const source = (fonte || '').toLowerCase();
+  if (source === 'semgrep') return 'SAST · Semgrep';
+  if (source === 'trivy') return 'SCA · Trivy';
+  return fonte || 'Desconhecida';
+};
+
+const getSourceColorClass = (fonte: string) => {
+  const source = (fonte || '').toLowerCase();
+  if (source === 'semgrep') return 'text-emerald-400 border-emerald-900/60 bg-emerald-950/30';
+  if (source === 'trivy') return 'text-cyan-400 border-cyan-900/60 bg-cyan-950/30';
+  return 'text-zinc-300 border-zinc-800 bg-zinc-900';
+};
+
+const mapBackendFinding = (finding: BackendFinding): Finding => ({
+  id: finding.id,
+  repoUrl: finding.repo_url,
+  fonte: (finding.fonte || 'desconhecida').toLowerCase(),
+  ruleId: finding.rule_id || 'N/A',
+  arquivo: finding.file_path || 'N/A',
+  linha: Number(finding.line || 0),
+  severidade: (finding.severity || 'UNKNOWN').toUpperCase(),
+  prideScore: Number(finding.pride_score || 0),
+  problema: finding.message || 'Sem descrição disponível.',
+  fixIa: finding.ai_fix || '',
+  fixValidado: finding.fix_validado,
+});
 
 const translations: Record<string, any> = {
   pt: {
@@ -108,16 +148,22 @@ const translations: Record<string, any> = {
     metricHigh: "ALTOS",
     metricMedium: "MÉDIOS",
     metricLow: "BAIXOS",
+    metricSast: "SAST",
+    metricSca: "SCA",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Buscar arquivo ou problema...",
     filterAllSeverities: "Todas Severidades",
+    filterAllSources: "Todas Fontes",
+    thSource: "FONTE",
+    thRule: "REGRA / CVE",
     thFile: "ARQUIVO",
     thLine: "LINHA",
     thSeverity: "SEVERIDADE",
     thPride: "PRIDE SCORE",
     thIssue: "PROBLEMA",
     thFix: "FIX IA",
+    aiDisabled: "IA desativada",
     emptyFindings: "Nenhum finding encontrado até o momento.",
     emptyFindingsDesc: "Insira a URL de um repositório acima e clique em 'Iniciar Scan' para analisar.",
 
@@ -147,14 +193,7 @@ const translations: Record<string, any> = {
     pricingDesc: "Escolha o plano ideal para blindar suas aplicações do desenvolvimento à produção.",
     currentPlanTag: "PLANO ATUAL",
     btnSelectPlan: "Assinar Plano",
-    btnActivePlan: "Plano Ativo",
-
-    mockFindings: [
-      { arquivo: 'src/auth.py', linha: 42, severidade: 'CRÍTICO', prideScore: 9.8, problema: 'Chave secreta no código (Hardcoded)', fixIa: 'Usar Variável de Ambiente' },
-      { arquivo: 'backend/server.js', linha: 104, severidade: 'ALTO', prideScore: 8.2, problema: 'Injeção de SQL em consulta', fixIa: 'Usar Parameterized Queries' },
-      { arquivo: 'src/components/Form.tsx', linha: 18, severidade: 'MÉDIO', prideScore: 5.5, problema: 'XSS Refletido', fixIa: 'Sanitizar entrada com DOMPurify' },
-      { arquivo: 'package.json', linha: 5, severidade: 'BAIXO', prideScore: 2.1, problema: 'Dependência desatualizada', fixIa: 'Atualizar pacote para v2.1.0' }
-    ]
+    btnActivePlan: "Plano Ativo"
   },
   en: {
     badgeTag: "ASPM PLATFORM & REAL-TIME SECURITY",
@@ -195,16 +234,22 @@ const translations: Record<string, any> = {
     metricHigh: "HIGH",
     metricMedium: "MEDIUM",
     metricLow: "LOW",
+    metricSast: "SAST",
+    metricSca: "SCA",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Search file or vulnerability...",
     filterAllSeverities: "All Severities",
+    filterAllSources: "All Sources",
+    thSource: "SOURCE",
+    thRule: "RULE / CVE",
     thFile: "FILE",
     thLine: "LINE",
     thSeverity: "SEVERITY",
     thPride: "PRIDE SCORE",
     thIssue: "ISSUE",
     thFix: "AI FIX",
+    aiDisabled: "AI disabled",
     emptyFindings: "No findings discovered yet.",
     emptyFindingsDesc: "Enter a repository URL above and click 'Start Scan' to analyze.",
 
@@ -234,14 +279,7 @@ const translations: Record<string, any> = {
     pricingDesc: "Choose the best plan to shield your applications from development to production.",
     currentPlanTag: "CURRENT PLAN",
     btnSelectPlan: "Subscribe Plan",
-    btnActivePlan: "Active Plan",
-
-    mockFindings: [
-      { arquivo: 'src/auth.py', linha: 42, severidade: 'CRÍTICO', prideScore: 9.8, problema: 'Hardcoded Secret Key', fixIa: 'Use Environment Variable' },
-      { arquivo: 'backend/server.js', linha: 104, severidade: 'ALTO', prideScore: 8.2, problema: 'SQL Injection in Query', fixIa: 'Use Parameterized Queries' },
-      { arquivo: 'src/components/Form.tsx', linha: 18, severidade: 'MÉDIO', prideScore: 5.5, problema: 'Reflected XSS', fixIa: 'Sanitize Input with DOMPurify' },
-      { arquivo: 'package.json', linha: 5, severidade: 'BAIXO', prideScore: 2.1, problema: 'Outdated Dependency', fixIa: 'Update Package to v2.1.0' }
-    ]
+    btnActivePlan: "Active Plan"
   },
   es: {
     badgeTag: "PLATAFORMA ASPM Y SEGURIDAD EN TIEMPO REAL",
@@ -282,16 +320,22 @@ const translations: Record<string, any> = {
     metricHigh: "ALTOS",
     metricMedium: "MÉDIOS",
     metricLow: "BAJOS",
+    metricSast: "SAST",
+    metricSca: "SCA",
 
     findingsTitle: "Hallazgos de Seguridad",
     searchPlaceholder: "Buscar archivo o problema...",
     filterAllSeverities: "Todas Severidades",
+    filterAllSources: "Todas las Fuentes",
+    thSource: "FUENTE",
+    thRule: "REGLA / CVE",
     thFile: "ARCHIVO",
     thLine: "LÍNEA",
     thSeverity: "SEVERIDAD",
     thPride: "PUNTAJE PRIDE",
     thIssue: "PROBLEMA",
     thFix: "SOLUCIÓN IA",
+    aiDisabled: "IA desactivada",
     emptyFindings: "No se encontraron hallazgos hasta el momento.",
     emptyFindingsDesc: "Ingrese una URL de repositorio arriba y haga clic en 'Iniciar Escaneo'.",
 
@@ -321,14 +365,7 @@ const translations: Record<string, any> = {
     pricingDesc: "Elige el plan ideal para blindar tus aplicaciones desde el desarrollo hasta la producción.",
     currentPlanTag: "PLAN ACTUAL",
     btnSelectPlan: "Suscribir Plan",
-    btnActivePlan: "Plan Activo",
-
-    mockFindings: [
-      { arquivo: 'src/auth.py', linha: 42, severidade: 'CRÍTICO', prideScore: 9.8, problema: 'Clave secreta incrustada (Hardcoded)', fixIa: 'Usar Variable de Entorno' },
-      { arquivo: 'backend/server.js', linha: 104, severidade: 'ALTO', prideScore: 8.2, problema: 'Inyección SQL en consulta', fixIa: 'Usar Consultas Parametrizadas' },
-      { arquivo: 'src/components/Form.tsx', linha: 18, severidade: 'MÉDIO', prideScore: 5.5, problema: 'XSS Reflejado', fixIa: 'Sanear entrada con DOMPurify' },
-      { arquivo: 'package.json', linha: 5, severidade: 'BAIXO', prideScore: 2.1, problema: 'Dependencia desactualizada', fixIa: 'Actualizar paquete a v2.1.0' }
-    ]
+    btnActivePlan: "Plan Activo"
   }
 };
 
@@ -348,7 +385,7 @@ export default function App() {
         email: "analista@codeshield.io",
         password: "123",
         username: "Analista SOC",
-        defaultRepo: "https://github.com/maickryamassaki/CodeShield-ASPM.git",
+        defaultRepo: "https://github.com/maickryamassaki/CodeShield-ASPM",
         profilePic: "",
         currentPlan: "Pro",
         scansUsed: 12,
@@ -369,12 +406,14 @@ export default function App() {
   const [authError, setAuthError] = useState('');
 
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [scanSummary, setScanSummary] = useState<ScanResponse | null>(null);
   const t = translations[lang] || translations.pt;
 
   const [repoUrl, setRepoUrl] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
   const [scanProgress, setScanProgress] = useState(0);
+  const [scanError, setScanError] = useState('');
   const [saveAlert, setSaveAlert] = useState(false);
 
   // Modal de IA (Ação do Finding)
@@ -390,33 +429,43 @@ export default function App() {
   // Filtros
   const [searchTerm, setSearchTerm] = useState('');
   const [filterSeverity, setFilterSeverity] = useState('todos');
+  const [filterSource, setFilterSource] = useState('todos');
 
   useEffect(() => {
     localStorage.setItem('shield_registered_users', JSON.stringify(registeredUsers));
   }, [registeredUsers]);
 
-  // AJUSTE BUG DO POPUP: Não aciona mais setShowWelcomePopup(true) na troca de contexto/re-render
+  // Mantém a sessão local e carrega findings reais do repositório padrão.
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('shield_current_user', JSON.stringify(currentUser));
-      setRepoUrl(currentUser.defaultRepo || 'https://github.com/maickryamassaki/CodeShield-ASPM.git');
+
+      const defaultRepo = currentUser.defaultRepo || 'https://github.com/maickryamassaki/CodeShield-ASPM';
+      setRepoUrl(defaultRepo);
       setShowLandingScreen(false);
+
+      buscarFindings(undefined, defaultRepo)
+        .then((dados) => setFindings(dados.map(mapBackendFinding)))
+        .catch((erro) => {
+          console.error('[CodeShield] Falha ao carregar findings:', erro);
+        });
     } else {
       localStorage.removeItem('shield_current_user');
+      setFindings([]);
+      setScanSummary(null);
     }
-  }, [currentUser]);
-
-  useEffect(() => {
-    if (findings.length > 0) {
-      setFindings(t.mockFindings);
-    }
-  }, [lang, findings.length, t.mockFindings]);
+  }, [currentUser?.email, currentUser?.defaultRepo]);
 
   useEffect(() => {
     setClaudeMessages([
-      { sender: 'claude', text: t.claudeGreeting }
+      {
+        sender: 'claude',
+        text: `${t.claudeGreeting}
+
+${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recurso.`
+      }
     ]);
-  }, [lang, t.claudeGreeting]);
+  }, [lang, t.claudeGreeting, t.aiDisabled]);
 
   const handleLangChange = (newLang: 'pt' | 'en' | 'es') => {
     setLang(newLang);
@@ -432,6 +481,8 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     setFindings([]);
+    setScanSummary(null);
+    setScanError('');
     setShowLandingScreen(true);
     setShowWelcomePopup(false);
   };
@@ -451,7 +502,7 @@ export default function App() {
         email: authEmail,
         password: authPassword,
         username: authUsername || authEmail.split('@')[0],
-        defaultRepo: "https://github.com/maickryamassaki/CodeShield-ASPM.git",
+        defaultRepo: "https://github.com/maickryamassaki/CodeShield-ASPM",
         profilePic: "",
         currentPlan: "Starter",
         scansUsed: 0,
@@ -479,41 +530,66 @@ export default function App() {
     }
   };
 
-  const handleStartScan = () => {
+  const handleStartScan = async () => {
     if (!currentUser) return;
+
     if (currentUser.scansUsed >= currentUser.maxScans) {
       alert(t.scanLimitReached);
       return;
     }
 
-    if (!repoUrl) {
-      alert("Por favor, insira a URL de um repositório Git.");
+    const repo = repoUrl.trim();
+    if (!repo) {
+      alert(lang === 'pt' ? 'Por favor, insira a URL de um repositório Git.' : lang === 'es' ? 'Ingrese la URL de un repositorio Git.' : 'Please enter a Git repository URL.');
       return;
     }
 
     setIsScanning(true);
-    setScanProgress(15);
-    setScanMessage(lang === 'pt' ? "Clonando repositório..." : lang === 'es' ? "Clonando repositorio..." : "Cloning repository...");
+    setScanProgress(10);
+    setScanError('');
+    setScanSummary(null);
+    setScanMessage(lang === 'pt' ? 'Enviando repositório para análise...' : lang === 'es' ? 'Enviando repositorio para análisis...' : 'Sending repository for analysis...');
 
-    setTimeout(() => {
-      setScanProgress(55);
-      setScanMessage(lang === 'pt' ? "Analisando AST & Segurança..." : lang === 'es' ? "Analizando AST y Seguridad..." : "Analyzing AST & Security...");
-    }, 1200);
+    try {
+      setScanProgress(25);
+      setScanMessage(lang === 'pt' ? 'Executando Semgrep (SAST) e Trivy (SCA)...' : lang === 'es' ? 'Ejecutando Semgrep (SAST) y Trivy (SCA)...' : 'Running Semgrep (SAST) and Trivy (SCA)...');
 
-    setTimeout(() => {
-      setScanProgress(85);
-      setScanMessage(lang === 'pt' ? "Avaliando vulnerabilidades PRIDE..." : lang === 'es' ? "Evaluando vulnerabilidades PRIDE..." : "Evaluating PRIDE vulnerabilities...");
-    }, 2400);
+      const resultado = await iniciarScan(repo);
+      setScanSummary(resultado);
 
-    setTimeout(() => {
+      setScanProgress(80);
+      setScanMessage(lang === 'pt' ? 'Carregando findings do banco...' : lang === 'es' ? 'Cargando hallazgos de la base...' : 'Loading findings from database...');
+
+      const dados = await buscarFindings(undefined, repo);
+      setFindings(dados.map(mapBackendFinding));
+
       setScanProgress(100);
-      setIsScanning(false);
-      setFindings(t.mockFindings);
+      setScanMessage(
+        lang === 'pt'
+          ? `Scan concluído: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
+          : lang === 'es'
+            ? `Escaneo finalizado: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
+            : `Scan complete: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
+      );
 
       const updated = { ...currentUser, scansUsed: currentUser.scansUsed + 1 };
       setCurrentUser(updated);
       setRegisteredUsers(prev => prev.map(u => u.email === updated.email ? updated : u));
-    }, 3500);
+    } catch (erro: any) {
+      console.error('[CodeShield] Erro ao executar scan:', erro);
+
+      const detalhe = erro?.response?.data?.erro || erro?.response?.data?.detail || erro?.message;
+      setScanError(
+        lang === 'pt'
+          ? `Falha ao executar o scan${detalhe ? `: ${detalhe}` : '.'}`
+          : lang === 'es'
+            ? `Error al ejecutar el escaneo${detalhe ? `: ${detalhe}` : '.'}`
+            : `Scan failed${detalhe ? `: ${detalhe}` : '.'}`
+      );
+      setScanProgress(0);
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const handleOpenAiModal = (finding: Finding) => {
@@ -521,7 +597,9 @@ export default function App() {
     setChatMessages([
       {
         sender: 'ai',
-        text: t.aiInitialGreeting(finding.problema, finding.arquivo, finding.linha, finding.fixIa)
+        text: finding.fixIa
+          ? t.aiInitialGreeting(finding.problema, finding.arquivo, finding.linha || '—', finding.fixIa)
+          : `${t.aiDisabled}. O finding continua disponível para análise manual.`
       }
     ]);
   };
@@ -532,35 +610,29 @@ export default function App() {
     const userText = inputAi;
     setChatMessages(prev => [...prev, { sender: 'user', text: userText }]);
     setInputAi('');
-
-    setTimeout(() => {
-      setChatMessages(prev => [
-        ...prev,
-        {
-          sender: 'ai',
-          text: t.aiResponsePrefix(userText)
-        }
-      ]);
-    }, 1000);
+    setChatMessages(prev => [
+      ...prev,
+      {
+        sender: 'ai',
+        text: `${t.aiDisabled}. Configure a API da Anthropic no backend para habilitar respostas interativas.`
+      }
+    ]);
   };
 
-  // ENVIAR MENSAGEM PARA O CLAUDE
+  // O chat visual é mantido, mas não simula respostas enquanto a IA estiver desativada.
   const handleSendClaudeMessage = () => {
     if (!inputClaude.trim()) return;
 
     const text = inputClaude;
-    setClaudeMessages(prev => [...prev, { sender: 'user', text }]);
+    setClaudeMessages(prev => [
+      ...prev,
+      { sender: 'user', text },
+      {
+        sender: 'claude',
+        text: `${t.aiDisabled}. Configure ANTHROPIC_API_KEY no backend para habilitar o chatbot.`
+      }
+    ]);
     setInputClaude('');
-
-    setTimeout(() => {
-      setClaudeMessages(prev => [
-        ...prev,
-        {
-          sender: 'claude',
-          text: `[Claude AI Response]\nCom base na sua solicitação sobre "${text}":\n\n1. Recomendamos aplicar validação estrita de entradas em todas as pontas da API.\n2. Utilize segredos armazenados em Cofres (HashiCorp Vault / AWS Secrets Manager).\n3. Habilite monitoramento continuo no pipeline CI/CD.`
-        }
-      ]);
-    }, 1200);
   };
 
   // UPLOAD DE FOTO DE PERFIL
@@ -595,16 +667,25 @@ export default function App() {
   };
 
   const filteredFindings = findings.filter(f => {
-    const matchSearch = f.arquivo.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                        f.problema.toLowerCase().includes(searchTerm.toLowerCase());
+    const termo = searchTerm.toLowerCase();
+    const matchSearch =
+      f.arquivo.toLowerCase().includes(termo) ||
+      f.problema.toLowerCase().includes(termo) ||
+      f.ruleId.toLowerCase().includes(termo) ||
+      f.fonte.toLowerCase().includes(termo);
+
     const matchSev = filterSeverity === 'todos' || f.severidade.toLowerCase() === filterSeverity.toLowerCase();
-    return matchSearch && matchSev;
+    const matchSource = filterSource === 'todos' || f.fonte.toLowerCase() === filterSource.toLowerCase();
+
+    return matchSearch && matchSev && matchSource;
   });
 
-  const countCritical = findings.filter(f => f.severidade.toLowerCase().includes('crític') || f.severidade.toLowerCase() === 'critical').length;
-  const countHigh = findings.filter(f => f.severidade.toLowerCase() === 'alto' || f.severidade.toLowerCase() === 'high').length;
-  const countMedium = findings.filter(f => f.severidade.toLowerCase().includes('méd') || f.severidade.toLowerCase() === 'medium').length;
-  const countLow = findings.filter(f => f.severidade.toLowerCase() === 'baixo' || f.severidade.toLowerCase() === 'low').length;
+  const countCritical = findings.filter(f => f.severidade === 'CRITICAL').length;
+  const countHigh = findings.filter(f => f.severidade === 'HIGH').length;
+  const countMedium = findings.filter(f => f.severidade === 'MEDIUM').length;
+  const countLow = findings.filter(f => f.severidade === 'LOW').length;
+  const countSast = findings.filter(f => f.fonte === 'semgrep').length;
+  const countSca = findings.filter(f => f.fonte === 'trivy').length;
 
   // LANDING PAGE ESTILO NETFLIX
   if (showLandingScreen && !currentUser) {
@@ -962,16 +1043,47 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {!isScanning && scanMessage && !scanError && scanSummary && (
+                  <div className="p-3 bg-emerald-950/20 border border-emerald-900/50 rounded-xl text-xs font-mono text-emerald-300 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span>{scanMessage}</span>
+                    <span>SAST: {scanSummary.semgrep}</span>
+                    <span>SCA: {scanSummary.trivy}</span>
+                    <span>IA: {scanSummary.ia}</span>
+                  </div>
+                )}
+
+                {scanError && (
+                  <div className="p-3 bg-rose-950/30 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                    {scanError}
+                  </div>
+                )}
               </section>
 
               {/* CARDS MÉTRICOS */}
-              <section className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4">
+              <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-4">
                 <div className="bg-[#080808] border border-zinc-900 rounded-xl p-5 flex items-center justify-between hover:border-zinc-700 transition-all">
                   <div>
                     <span className="text-[11px] font-bold text-zinc-400 tracking-wider block mb-2">{t.metricTotal}</span>
                     <span className="text-3xl font-bold text-white font-mono">{findings.length}</span>
                   </div>
                   <ShieldCheck className="w-5 h-5 text-zinc-400" />
+                </div>
+
+                <div className="bg-[#080808] border border-emerald-900/40 rounded-xl p-5 flex items-center justify-between hover:border-emerald-800 transition-all">
+                  <div>
+                    <span className="text-[11px] font-bold text-emerald-400 tracking-wider block mb-2">{t.metricSast}</span>
+                    <span className="text-3xl font-bold text-emerald-400 font-mono">{countSast}</span>
+                  </div>
+                  <Code2 className="w-5 h-5 text-emerald-400" />
+                </div>
+
+                <div className="bg-[#080808] border border-cyan-900/40 rounded-xl p-5 flex items-center justify-between hover:border-cyan-800 transition-all">
+                  <div>
+                    <span className="text-[11px] font-bold text-cyan-400 tracking-wider block mb-2">{t.metricSca}</span>
+                    <span className="text-3xl font-bold text-cyan-400 font-mono">{countSca}</span>
+                  </div>
+                  <Shield className="w-5 h-5 text-cyan-400" />
                 </div>
 
                 {/* CRÍTICOS - VERMELHO */}
@@ -1037,6 +1149,20 @@ export default function App() {
                       className="bg-black border border-zinc-800 text-xs rounded-xl px-3 py-1.5 text-slate-200 focus:outline-none"
                     >
                       <option value="todos">{t.filterAllSeverities}</option>
+                      <option value="CRITICAL">CRITICAL</option>
+                      <option value="HIGH">HIGH</option>
+                      <option value="MEDIUM">MEDIUM</option>
+                      <option value="LOW">LOW</option>
+                    </select>
+
+                    <select
+                      value={filterSource}
+                      onChange={(e) => setFilterSource(e.target.value)}
+                      className="bg-black border border-zinc-800 text-xs rounded-xl px-3 py-1.5 text-slate-200 focus:outline-none"
+                    >
+                      <option value="todos">{t.filterAllSources}</option>
+                      <option value="semgrep">Semgrep / SAST</option>
+                      <option value="trivy">Trivy / SCA</option>
                     </select>
                   </div>
                 </div>
@@ -1045,43 +1171,49 @@ export default function App() {
                   <table className="w-full text-left text-xs font-mono">
                     <thead className="bg-[#0a0a0a] border-b border-zinc-900 text-zinc-400">
                       <tr>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thFile}</th>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thLine}</th>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thSeverity}</th>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thPride}</th>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thIssue}</th>
-                        <th className="px-6 py-4 font-semibold tracking-wider">{t.thFix}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thSource}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thRule}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thFile}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thLine}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thSeverity}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thPride}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thIssue}</th>
+                        <th className="px-4 py-4 font-semibold tracking-wider">{t.thFix}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-900">
                       {filteredFindings.length > 0 ? (
-                        filteredFindings.map((finding, idx) => (
-                          <tr key={idx} className="hover:bg-zinc-900/40 transition-colors">
-                            <td className="px-6 py-4 text-slate-200">{finding.arquivo}</td>
-                            <td className="px-6 py-4 text-zinc-400">{finding.linha}</td>
-                            
-                            {/* NÍVEIS DE CRITICIDADE COM CORES RESPEITADAS */}
-                            <td className={`px-6 py-4 uppercase ${getSeverityColorClass(finding.severidade)}`}>
+                        filteredFindings.map((finding) => (
+                          <tr key={finding.id} className="hover:bg-zinc-900/40 transition-colors align-top">
+                            <td className="px-4 py-4">
+                              <span className={`inline-flex px-2 py-1 rounded-lg border text-[10px] font-bold whitespace-nowrap ${getSourceColorClass(finding.fonte)}`}>
+                                {getSourceLabel(finding.fonte)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-4 text-zinc-300 max-w-[220px] break-all">{finding.ruleId}</td>
+                            <td className="px-4 py-4 text-slate-200 max-w-[240px] break-all">{finding.arquivo}</td>
+                            <td className="px-4 py-4 text-zinc-400">{finding.linha > 0 ? finding.linha : '—'}</td>
+                            <td className={`px-4 py-4 uppercase ${getSeverityColorClass(finding.severidade)}`}>
                               {finding.severidade}
                             </td>
-
-                            <td className="px-6 py-4 font-bold" style={{ color: BRAND_GREEN }}>{finding.prideScore}</td>
-                            <td className="px-6 py-4 text-slate-300">{finding.problema}</td>
-                            <td className="px-6 py-4">
+                            <td className="px-4 py-4 font-bold" style={{ color: BRAND_GREEN }}>{finding.prideScore.toFixed(1)}</td>
+                            <td className="px-4 py-4 text-slate-300 min-w-[280px] max-w-[520px] whitespace-normal">{finding.problema}</td>
+                            <td className="px-4 py-4">
                               <button 
                                 onClick={() => handleOpenAiModal(finding)}
-                                style={{ color: BRAND_GREEN, borderColor: BRAND_GREEN + "40" }}
-                                className="px-3 py-1 bg-zinc-900 border rounded-lg text-[11px] font-sans font-medium flex items-center space-x-1 hover:scale-105 transition-all"
+                                disabled={!finding.fixIa}
+                                style={finding.fixIa ? { color: BRAND_GREEN, borderColor: BRAND_GREEN + "40" } : {}}
+                                className={`px-3 py-1 border rounded-lg text-[11px] font-sans font-medium flex items-center space-x-1 transition-all whitespace-nowrap ${finding.fixIa ? 'bg-zinc-900 hover:scale-105' : 'bg-zinc-950 border-zinc-800 text-zinc-600 cursor-not-allowed'}`}
                               >
                                 <Sparkles className="w-3 h-3" />
-                                <span>{finding.fixIa}</span>
+                                <span>{finding.fixIa ? (lang === 'pt' ? 'Ver correção' : lang === 'es' ? 'Ver corrección' : 'View fix') : t.aiDisabled}</span>
                               </button>
                             </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan={6} className="px-6 py-16 text-center text-zinc-500">
+                          <td colSpan={8} className="px-6 py-16 text-center text-zinc-500">
                             <div className="flex flex-col items-center justify-center space-y-3">
                               <ShieldCheck className="w-8 h-8 text-zinc-700" />
                               <p className="font-sans text-sm text-zinc-400">{t.emptyFindings}</p>
@@ -1380,10 +1512,11 @@ export default function App() {
                 value={inputClaude}
                 onChange={(e) => setInputClaude(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendClaudeMessage()}
-                placeholder={t.claudePlaceholder}
-                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-600"
+                placeholder={t.aiDisabled}
+                disabled
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-600 cursor-not-allowed"
               />
-              <button onClick={handleSendClaudeMessage} className="p-2 bg-purple-600 text-white rounded-xl hover:opacity-90 hover:scale-105 transition-all">
+              <button onClick={handleSendClaudeMessage} disabled className="p-2 bg-zinc-800 text-zinc-600 rounded-xl cursor-not-allowed">
                 <Send className="w-4 h-4" />
               </button>
             </div>
@@ -1424,13 +1557,14 @@ export default function App() {
                 value={inputAi}
                 onChange={(e) => setInputAi(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendAiMessage()}
-                placeholder={t.aiInputPlaceholder}
-                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-zinc-700"
+                placeholder={t.aiDisabled}
+                disabled
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-600 cursor-not-allowed"
               />
               <button 
-                onClick={handleSendAiMessage} 
-                style={{ backgroundColor: BRAND_GREEN, color: '#000000' }}
-                className="p-2 rounded-xl hover:opacity-90 hover:scale-105 transition-all"
+                onClick={handleSendAiMessage}
+                disabled
+                className="p-2 rounded-xl bg-zinc-800 text-zinc-600 cursor-not-allowed"
               >
                 <Send className="w-4 h-4" />
               </button>
