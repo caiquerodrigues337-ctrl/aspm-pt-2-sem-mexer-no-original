@@ -16,6 +16,7 @@ Responsável por:
 
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 import os
 import shutil
 import subprocess
@@ -23,7 +24,7 @@ import tempfile
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.database import SessionLocal
 from app.models import Finding, Scan
@@ -45,11 +46,15 @@ from app.validators.fix_validator import (
 )
 
 
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+ENV_PATH = BACKEND_DIR / ".env"
+
+load_dotenv(ENV_PATH)
 
 router = APIRouter()
 
 THRESHOLD_IA = 7.0
+AI_ENV_VAR = "REACT_APP_ANTHROPIC_KEY"
 
 
 def agora_utc():
@@ -108,7 +113,12 @@ def limpar_caminho_arquivo(
 
 
 def ia_disponivel() -> bool:
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    chave = (
+        os.getenv(AI_ENV_VAR)
+        or ""
+    ).strip()
+
+    return bool(chave)
 
 
 def obter_ultimo_scan(
@@ -846,89 +856,200 @@ def validar_ast(
 
 class PerguntaRequest(BaseModel):
     pergunta: str
-    findings: list
+    findings: list[dict] = Field(default_factory=list)
+
+
+def montar_contexto_chat(
+    findings: list[dict],
+    limite: int = 10,
+) -> str:
+    """
+    Monta um contexto pequeno e previsível para o Claude.
+
+    O frontend já prioriza os findings por Pride Score, mas o
+    backend também limita a quantidade recebida para evitar
+    prompts excessivamente grandes.
+    """
+    findings_contexto = findings[:limite]
+
+    if not findings_contexto:
+        return (
+            "Nenhum finding foi enviado no contexto. "
+            "Responda somente à pergunta do usuário e deixe claro "
+            "quando não houver dados suficientes do scan."
+        )
+
+    linhas = []
+
+    for finding in findings_contexto:
+        severity = (
+            finding.get("severity")
+            or finding.get("severidade")
+            or "UNKNOWN"
+        )
+
+        score = (
+            finding.get("pride_score")
+            if finding.get("pride_score") is not None
+            else finding.get("prideScore")
+        )
+
+        fonte = (
+            finding.get("fonte")
+            or "desconhecida"
+        )
+
+        rule_id = (
+            finding.get("rule_id")
+            or finding.get("ruleId")
+            or "N/A"
+        )
+
+        arquivo = (
+            finding.get("file_path")
+            or finding.get("arquivo")
+            or "N/A"
+        )
+
+        mensagem = (
+            finding.get("message")
+            or finding.get("problema")
+            or "Sem descrição."
+        )
+
+        ai_fix = (
+            finding.get("ai_fix")
+            or finding.get("fixIa")
+            or ""
+        )
+
+        linha = (
+            f"- Severidade: {severity} | "
+            f"Score: {score if score is not None else 'N/A'} | "
+            f"Fonte: {fonte} | "
+            f"Regra/CVE: {rule_id} | "
+            f"Arquivo: {arquivo} | "
+            f"Problema: {mensagem}"
+        )
+
+        if ai_fix:
+            linha += (
+                " | Correção IA já registrada: "
+                f"{ai_fix[:500]}"
+            )
+
+        linhas.append(linha)
+
+    return "\n".join(linhas)
 
 
 @router.post("/chat")
 def chat_findings(
     request: PerguntaRequest,
 ):
+    pergunta = (
+        request.pergunta
+        or ""
+    ).strip()
+
+    if not pergunta:
+        return {
+            "resposta": (
+                "Digite uma pergunta para o assistente."
+            )
+        }
+
     if not ia_disponivel():
         return {
             "resposta": (
-                "O módulo de IA está temporariamente "
-                "desativado. Os scanners, scores e "
-                "findings continuam funcionando normalmente."
+                "O módulo de IA está desativado no backend. "
+                "Configure REACT_APP_ANTHROPIC_KEY no arquivo "
+                "backend/.env."
             )
         }
 
     try:
         from app.ai.remediation import (
-            client,
+            obter_cliente,
+            solicitar_texto,
             MODEL,
         )
 
+        cliente = obter_cliente()
+
     except Exception as erro:
-        return {
-            "resposta": f"IA indisponível: {erro}"
-        }
-
-    if client is None:
-        return {
-            "resposta": "O módulo de IA está desativado."
-        }
-
-    findings_contexto = request.findings[:10]
-
-    contexto = "\n".join(
-        (
-            f"- "
-            f"{finding.get('severity') or finding.get('severidade')} | "
-            f"Score: "
-            f"{finding.get('pride_score') or finding.get('prideScore')} | "
-            f"Fonte: "
-            f"{finding.get('fonte') or 'desconhecida'} | "
-            f"Arquivo: "
-            f"{finding.get('file_path') or finding.get('arquivo')} | "
-            f"{finding.get('message') or finding.get('problema')}"
+        print(
+            "[ERRO] Falha ao carregar módulo de IA: "
+            f"{erro}"
         )
-        for finding in findings_contexto
+
+        return {
+            "resposta": (
+                "A IA está configurada, mas o backend não conseguiu "
+                "inicializar o cliente da Anthropic."
+            )
+        }
+
+    if cliente is None:
+        return {
+            "resposta": (
+                "A chave da Anthropic não está disponível para o "
+                "backend."
+            )
+        }
+
+    contexto = montar_contexto_chat(
+        request.findings,
+        limite=10,
     )
 
     prompt = f"""
-Você é um assistente de segurança da plataforma CodeShield ASPM.
+Você é o assistente de segurança da plataforma CodeShield ASPM.
 
-Findings encontrados no repositório:
+Sua tarefa é responder perguntas sobre findings de segurança de
+aplicações de forma técnica, objetiva e útil.
 
+CONTEXTO DO SCAN:
 {contexto}
 
-Pergunta do usuário:
+PERGUNTA DO USUÁRIO:
+{pergunta}
 
-{request.pergunta}
-
-Responda em português, de forma curta, clara e direta.
+REGRAS DA RESPOSTA:
+- Responda em português.
+- Use somente os dados disponíveis no contexto quando a pergunta
+  depender do scan.
+- Não invente CVEs, versões, arquivos, scores ou resultados.
+- Quando faltar informação, diga explicitamente que o contexto não
+  contém os dados necessários.
+- Para perguntas sobre correção, explique a ação recomendada de forma
+  prática.
+- Se houver vários findings, priorize os de maior severidade e score.
+- Retorne texto normal, sem depender de ferramentas externas.
 """
 
     try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=300,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+        resposta = solicitar_texto(
+            prompt=prompt,
+            max_tokens=1200,
+            tentativas=2,
         )
 
-        for bloco in response.content:
-            if bloco.type == "text":
-                return {
-                    "resposta": bloco.text
-                }
+        if resposta:
+            return {
+                "resposta": resposta
+            }
+
+        print(
+            "[AVISO] Claude não retornou conteúdo textual "
+            f"para o modelo {MODEL}."
+        )
 
         return {
-            "resposta": "Sem resposta disponível."
+            "resposta": (
+                "A IA respondeu à requisição, mas não retornou "
+                "conteúdo textual. Tente enviar a pergunta novamente."
+            )
         }
 
     except Exception as erro:
@@ -938,7 +1059,8 @@ Responda em português, de forma curta, clara e direta.
 
         return {
             "resposta": (
-                "Erro ao consultar a IA: "
-                f"{erro}"
+                "Não foi possível consultar a IA neste momento. "
+                "Verifique a configuração da chave/modelo no backend "
+                "e tente novamente."
             )
         }

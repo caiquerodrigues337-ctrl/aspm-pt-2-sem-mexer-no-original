@@ -8,6 +8,7 @@ Responsável por:
 - Remover findings duplicados
 - Normalizar severidades
 - Converter findings para o padrão interno da CodeShield
+- Disponibilizar uma execução detalhada para validação de fixes
 """
 
 import json
@@ -22,9 +23,6 @@ import sys
 # CONFIGURAÇÃO
 # ============================================================
 
-# O "auto" tenta descobrir regras automaticamente.
-# O "p/python" garante cobertura das regras Python,
-# que foi a configuração que encontrou os findings no teste manual.
 SEMGREP_CONFIGS = [
     "auto",
     "p/python",
@@ -36,15 +34,6 @@ SEMGREP_CONFIGS = [
 # ============================================================
 
 def localizar_semgrep() -> str:
-    """
-    Localiza o executável do Semgrep.
-
-    Ordem:
-    1. PATH
-    2. Ambiente virtual atual
-    3. fallback para "semgrep"
-    """
-
     caminho_path = shutil.which("semgrep")
 
     if caminho_path:
@@ -76,11 +65,6 @@ SEMGREP_EXE = localizar_semgrep()
 def normalizar_severidade(
     sev_raw: str
 ) -> str:
-    """
-    Converte severidades do Semgrep
-    para o padrão da CodeShield.
-    """
-
     mapeamento = {
         "ERROR": "HIGH",
         "WARNING": "MEDIUM",
@@ -102,10 +86,6 @@ def normalizar_severidade(
 # ============================================================
 
 def verificar_semgrep() -> bool:
-    """
-    Confirma que o executável está disponível.
-    """
-
     try:
         resultado = subprocess.run(
             [
@@ -142,15 +122,10 @@ def verificar_semgrep() -> bool:
         print(
             "[ERRO] Semgrep não encontrado."
         )
-
         print(
-            "[INFO] Instale com:"
-        )
-
-        print(
+            "[INFO] Instale com: "
             "pip install semgrep"
         )
-
         return False
 
     except Exception as erro:
@@ -158,34 +133,29 @@ def verificar_semgrep() -> bool:
             "[ERRO] Falha ao verificar "
             f"Semgrep: {erro}"
         )
-
         return False
 
 
 # ============================================================
-# EXECUTAR UMA CONFIGURAÇÃO
+# EXECUÇÃO DETALHADA
 # ============================================================
 
-def executar_config_semgrep(
+def executar_config_semgrep_detalhado(
     repo_path: str,
     config: str,
-) -> list:
+) -> dict:
     """
-    Executa uma configuração específica do Semgrep.
+    Executa uma configuração e retorna findings, errors e
+    arquivos efetivamente escaneados.
 
-    Exemplo:
-    auto
-    p/python
+    Esta versão detalhada é usada pelo re-scan determinístico.
     """
-
     print(
         "\n----------------------------------------"
     )
-
     print(
         f"[INFO] Semgrep config: {config}"
     )
-
     print(
         "----------------------------------------"
     )
@@ -205,14 +175,9 @@ def executar_config_semgrep(
     try:
         resultado = subprocess.run(
             comando,
-
-            # Muito importante:
-            # executa dentro do repositório analisado.
             cwd=repo_path,
-
             capture_output=True,
             text=True,
-
             timeout=300,
         )
 
@@ -222,7 +187,16 @@ def executar_config_semgrep(
             "demorou mais de 5 minutos."
         )
 
-        return []
+        return {
+            "executado": False,
+            "findings": [],
+            "errors": [
+                {
+                    "message": "timeout",
+                }
+            ],
+            "scanned": [],
+        }
 
     except Exception as erro:
         print(
@@ -230,11 +204,16 @@ def executar_config_semgrep(
             f"({config}): {erro}"
         )
 
-        return []
-
-    # ========================================================
-    # SEM JSON
-    # ========================================================
+        return {
+            "executado": False,
+            "findings": [],
+            "errors": [
+                {
+                    "message": str(erro),
+                }
+            ],
+            "scanned": [],
+        }
 
     if not resultado.stdout.strip():
         print(
@@ -243,19 +222,22 @@ def executar_config_semgrep(
         )
 
         if resultado.stderr.strip():
-            print(
-                "[DEBUG] stderr:"
-            )
+            print("[DEBUG] stderr:")
+            print(resultado.stderr[:1000])
 
-            print(
-                resultado.stderr[:1000]
-            )
-
-        return []
-
-    # ========================================================
-    # PARSE JSON
-    # ========================================================
+        return {
+            "executado": False,
+            "findings": [],
+            "errors": [
+                {
+                    "message": (
+                        resultado.stderr.strip()
+                        or "Sem JSON"
+                    )
+                }
+            ],
+            "scanned": [],
+        }
 
     try:
         dados = json.loads(
@@ -268,7 +250,18 @@ def executar_config_semgrep(
             f"no Semgrep ({config}): {erro}"
         )
 
-        return []
+        return {
+            "executado": False,
+            "findings": [],
+            "errors": [
+                {
+                    "message": (
+                        f"JSON inválido: {erro}"
+                    )
+                }
+            ],
+            "scanned": [],
+        }
 
     findings = (
         dados.get("results")
@@ -280,14 +273,20 @@ def executar_config_semgrep(
         or []
     )
 
+    paths = (
+        dados.get("paths")
+        or {}
+    )
+
+    scanned = (
+        paths.get("scanned")
+        or []
+    )
+
     print(
         f"[OK] Config {config}: "
         f"{len(findings)} finding(s)."
     )
-
-    # ========================================================
-    # ERROS NÃO FATAIS
-    # ========================================================
 
     if erros:
         print(
@@ -303,9 +302,31 @@ def executar_config_semgrep(
                 f"[DEBUG] Erro {i}: {erro}"
             )
 
-    # Os findings válidos continuam sendo retornados,
-    # mesmo que existam erros de parsing em outros arquivos.
-    return findings
+    return {
+        "executado": True,
+        "findings": findings,
+        "errors": erros,
+        "scanned": scanned,
+    }
+
+
+# ============================================================
+# EXECUTAR UMA CONFIGURAÇÃO
+# ============================================================
+
+def executar_config_semgrep(
+    repo_path: str,
+    config: str,
+) -> list:
+    """
+    Mantém a interface antiga usada pelo scanner principal.
+    """
+    resultado = executar_config_semgrep_detalhado(
+        repo_path,
+        config,
+    )
+
+    return resultado["findings"]
 
 
 # ============================================================
@@ -315,11 +336,6 @@ def executar_config_semgrep(
 def chave_finding(
     finding: dict
 ) -> tuple:
-    """
-    Cria uma chave única aproximada para remover
-    findings duplicados entre múltiplas configurações.
-    """
-
     start = finding.get(
         "start",
         {},
@@ -365,13 +381,6 @@ def chave_finding(
 def run_semgrep(
     repo_path: str
 ) -> list:
-    """
-    Executa todas as configurações definidas
-    em SEMGREP_CONFIGS.
-
-    Os resultados são combinados e deduplicados.
-    """
-
     repo_path = os.path.abspath(
         repo_path
     )
@@ -381,7 +390,6 @@ def run_semgrep(
             "[ERRO] Repositório não encontrado: "
             f"{repo_path}"
         )
-
         return []
 
     if not verificar_semgrep():
@@ -399,10 +407,6 @@ def run_semgrep(
 
     todos_findings = []
 
-    # ========================================================
-    # EXECUTAR CONFIGURAÇÕES
-    # ========================================================
-
     for config in SEMGREP_CONFIGS:
         findings_config = (
             executar_config_semgrep(
@@ -415,12 +419,7 @@ def run_semgrep(
             findings_config
         )
 
-    # ========================================================
-    # REMOVER DUPLICADOS
-    # ========================================================
-
     findings_unicos = []
-
     chaves_vistas = set()
 
     for finding in todos_findings:
@@ -448,35 +447,126 @@ def run_semgrep(
     print(
         "\n========================================"
     )
-
     print(
         "SEMGREP - RESULTADO FINAL"
     )
-
     print(
         "========================================"
     )
-
     print(
         f"Brutos:      "
         f"{len(todos_findings)}"
     )
-
     print(
         f"Duplicados:  "
         f"{duplicados}"
     )
-
     print(
         f"Únicos:      "
         f"{len(findings_unicos)}"
     )
-
     print(
         "========================================"
     )
 
     return findings_unicos
+
+
+# ============================================================
+# RE-SCAN DETERMINÍSTICO
+# ============================================================
+
+def verificar_rule_id_no_diretorio(
+    repo_path: str,
+    rule_id: str,
+) -> dict:
+    """
+    Executa o mesmo conjunto de configurações do scanner SAST
+    e verifica especificamente se a rule_id original reaparece.
+
+    Para considerar o re-scan utilizável, pelo menos uma
+    configuração precisa ter realmente escaneado o arquivo.
+    """
+    repo_path = os.path.abspath(
+        repo_path
+    )
+
+    if not os.path.isdir(repo_path):
+        return {
+            "executado": False,
+            "rule_encontrada": False,
+            "motivo": (
+                "Diretório temporário de validação "
+                "não existe."
+            ),
+        }
+
+    if not verificar_semgrep():
+        return {
+            "executado": False,
+            "rule_encontrada": False,
+            "motivo": (
+                "Semgrep não está disponível."
+            ),
+        }
+
+    alguma_config_escaneou = False
+    avisos = []
+
+    for config in SEMGREP_CONFIGS:
+        resultado = executar_config_semgrep_detalhado(
+            repo_path,
+            config,
+        )
+
+        if not resultado["executado"]:
+            avisos.append(
+                f"{config}: execução falhou"
+            )
+            continue
+
+        if resultado["scanned"]:
+            alguma_config_escaneou = True
+
+        if resultado["errors"]:
+            avisos.append(
+                f"{config}: "
+                f"{len(resultado['errors'])} erro(s)"
+            )
+
+        for finding in resultado["findings"]:
+            if finding.get("check_id") == rule_id:
+                return {
+                    "executado": True,
+                    "rule_encontrada": True,
+                    "motivo": (
+                        "A mesma rule_id voltou a ser "
+                        "detectada após o re-scan."
+                    ),
+                    "avisos": avisos,
+                }
+
+    if not alguma_config_escaneou:
+        return {
+            "executado": False,
+            "rule_encontrada": False,
+            "motivo": (
+                "Nenhuma configuração do Semgrep "
+                "confirmou que o arquivo temporário "
+                "foi escaneado."
+            ),
+            "avisos": avisos,
+        }
+
+    return {
+        "executado": True,
+        "rule_encontrada": False,
+        "motivo": (
+            "A rule_id original não foi detectada "
+            "no código corrigido."
+        ),
+        "avisos": avisos,
+    }
 
 
 # ============================================================
@@ -487,20 +577,11 @@ def normalizar_finding(
     finding_raw: dict,
     repo_url: str
 ) -> dict | None:
-    """
-    Converte o formato bruto do Semgrep
-    para o formato interno da CodeShield.
-    """
-
     try:
         extra = finding_raw.get(
             "extra",
             {},
         )
-
-        # ====================================================
-        # RULE ID
-        # ====================================================
 
         rule_id = finding_raw.get(
             "check_id",
@@ -510,10 +591,6 @@ def normalizar_finding(
         if not rule_id:
             return None
 
-        # ====================================================
-        # SEVERIDADE
-        # ====================================================
-
         severity_raw = extra.get(
             "severity",
             "INFO",
@@ -522,10 +599,6 @@ def normalizar_finding(
         severity = normalizar_severidade(
             severity_raw
         )
-
-        # ====================================================
-        # ARQUIVO
-        # ====================================================
 
         file_path = finding_raw.get(
             "path",
@@ -539,19 +612,11 @@ def normalizar_finding(
             "/",
         )
 
-        # ====================================================
-        # LINHA
-        # ====================================================
-
         linha = (
             finding_raw
             .get("start", {})
             .get("line", 0)
         )
-
-        # ====================================================
-        # MENSAGEM
-        # ====================================================
 
         mensagem = extra.get(
             "message",
@@ -564,25 +629,14 @@ def normalizar_finding(
                 "pelo Semgrep."
             )
 
-        # ====================================================
-        # RESULTADO PADRONIZADO
-        # ====================================================
-
         return {
             "fonte": "semgrep",
-
             "tipo": severity,
-
             "repo_url": repo_url,
-
             "rule_id": rule_id,
-
             "file_path": file_path,
-
             "line": linha,
-
             "message": mensagem,
-
             "detalhes": (
                 f"rule={rule_id} "
                 f"file={file_path}"
@@ -594,7 +648,6 @@ def normalizar_finding(
             "[ERRO] Falha ao normalizar "
             f"finding Semgrep: {erro}"
         )
-
         return None
 
 
@@ -606,13 +659,6 @@ def normalizar_todos_findings(
     findings_raw: list,
     repo_url: str
 ) -> list:
-    """
-    Normaliza todos os findings encontrados.
-
-    Findings inválidos são ignorados sem
-    interromper o scan completo.
-    """
-
     normalizados = []
 
     for i, finding in enumerate(
@@ -628,7 +674,6 @@ def normalizar_todos_findings(
             normalizados.append(
                 resultado
             )
-
         else:
             print(
                 f"[AVISO] Finding Semgrep {i} "

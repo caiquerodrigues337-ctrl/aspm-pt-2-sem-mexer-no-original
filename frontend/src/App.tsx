@@ -39,6 +39,7 @@ import bgHero from './tela_inicial.jpeg';
 import {
   iniciarScan,
   buscarFindings,
+  enviarPerguntaClaude,
   type BackendFinding,
   type ScanResponse,
 } from './api/pride';
@@ -84,6 +85,7 @@ const getSourceLabel = (fonte: string) => {
   const source = (fonte || '').toLowerCase();
   if (source === 'semgrep') return 'SAST · Semgrep';
   if (source === 'trivy') return 'SCA · Trivy';
+  if (source === 'gitleaks') return 'SECRETS · Gitleaks';
   return fonte || 'Desconhecida';
 };
 
@@ -91,6 +93,7 @@ const getSourceColorClass = (fonte: string) => {
   const source = (fonte || '').toLowerCase();
   if (source === 'semgrep') return 'text-emerald-400 border-emerald-900/60 bg-emerald-950/30';
   if (source === 'trivy') return 'text-cyan-400 border-cyan-900/60 bg-cyan-950/30';
+  if (source === 'gitleaks') return 'text-violet-400 border-violet-900/60 bg-violet-950/30';
   return 'text-zinc-300 border-zinc-800 bg-zinc-900';
 };
 
@@ -150,6 +153,7 @@ const translations: Record<string, any> = {
     metricLow: "BAIXOS",
     metricSast: "SAST",
     metricSca: "SCA",
+    metricSecrets: "SECRETS",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Buscar arquivo ou problema...",
@@ -164,6 +168,10 @@ const translations: Record<string, any> = {
     thIssue: "PROBLEMA",
     thFix: "FIX IA",
     aiDisabled: "IA desativada",
+    aiNoFixYet: "Este finding ainda não possui uma correção automática salva. Você pode perguntar à IA como corrigi-lo.",
+    aiThinking: "IA está respondendo...",
+    claudeThinking: "Claude está respondendo...",
+    chatUnavailable: "Não foi possível consultar a IA.",
     emptyFindings: "Nenhum finding encontrado até o momento.",
     emptyFindingsDesc: "Insira a URL de um repositório acima e clique em 'Iniciar Scan' para analisar.",
 
@@ -236,6 +244,7 @@ const translations: Record<string, any> = {
     metricLow: "LOW",
     metricSast: "SAST",
     metricSca: "SCA",
+    metricSecrets: "SECRETS",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Search file or vulnerability...",
@@ -250,6 +259,10 @@ const translations: Record<string, any> = {
     thIssue: "ISSUE",
     thFix: "AI FIX",
     aiDisabled: "AI disabled",
+    aiNoFixYet: "This finding does not have a saved automatic fix yet. You can ask the AI how to fix it.",
+    aiThinking: "AI is responding...",
+    claudeThinking: "Claude is responding...",
+    chatUnavailable: "Unable to contact the AI.",
     emptyFindings: "No findings discovered yet.",
     emptyFindingsDesc: "Enter a repository URL above and click 'Start Scan' to analyze.",
 
@@ -322,6 +335,7 @@ const translations: Record<string, any> = {
     metricLow: "BAJOS",
     metricSast: "SAST",
     metricSca: "SCA",
+    metricSecrets: "SECRETS",
 
     findingsTitle: "Hallazgos de Seguridad",
     searchPlaceholder: "Buscar archivo o problema...",
@@ -336,6 +350,10 @@ const translations: Record<string, any> = {
     thIssue: "PROBLEMA",
     thFix: "SOLUCIÓN IA",
     aiDisabled: "IA desactivada",
+    aiNoFixYet: "Este hallazgo todavía no tiene una corrección automática guardada. Puedes preguntar a la IA cómo corregirlo.",
+    aiThinking: "La IA está respondiendo...",
+    claudeThinking: "Claude está respondiendo...",
+    chatUnavailable: "No fue posible consultar la IA.",
     emptyFindings: "No se encontraron hallazgos hasta el momento.",
     emptyFindingsDesc: "Ingrese una URL de repositorio arriba y haga clic en 'Iniciar Escaneo'.",
 
@@ -425,6 +443,8 @@ export default function App() {
   const [showClaudeModal, setShowClaudeModal] = useState(false);
   const [claudeMessages, setClaudeMessages] = useState<{ sender: 'claude' | 'user'; text: string }[]>([]);
   const [inputClaude, setInputClaude] = useState('');
+  const [isClaudeSending, setIsClaudeSending] = useState(false);
+  const [isAiSending, setIsAiSending] = useState(false);
 
   // Filtros
   const [searchTerm, setSearchTerm] = useState('');
@@ -460,12 +480,10 @@ export default function App() {
     setClaudeMessages([
       {
         sender: 'claude',
-        text: `${t.claudeGreeting}
-
-${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recurso.`
+        text: t.claudeGreeting
       }
     ]);
-  }, [lang, t.claudeGreeting, t.aiDisabled]);
+  }, [lang, t.claudeGreeting]);
 
   const handleLangChange = (newLang: 'pt' | 'en' | 'es') => {
     setLang(newLang);
@@ -552,7 +570,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
 
     try {
       setScanProgress(25);
-      setScanMessage(lang === 'pt' ? 'Executando Semgrep (SAST) e Trivy (SCA)...' : lang === 'es' ? 'Ejecutando Semgrep (SAST) y Trivy (SCA)...' : 'Running Semgrep (SAST) and Trivy (SCA)...');
+      setScanMessage(lang === 'pt' ? 'Executando Semgrep (SAST), Trivy (SCA) e Gitleaks (Secrets)...' : lang === 'es' ? 'Ejecutando Semgrep (SAST), Trivy (SCA) y Gitleaks (Secrets)...' : 'Running Semgrep (SAST), Trivy (SCA), and Gitleaks (Secrets)...');
 
       const resultado = await iniciarScan(repo);
       setScanSummary(resultado);
@@ -566,10 +584,10 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
       setScanProgress(100);
       setScanMessage(
         lang === 'pt'
-          ? `Scan concluído: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
+          ? `Scan concluído: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
           : lang === 'es'
-            ? `Escaneo finalizado: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
-            : `Scan complete: ${resultado.semgrep} SAST + ${resultado.trivy} SCA.`
+            ? `Escaneo finalizado: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
+            : `Scan complete: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
       );
 
       const updated = { ...currentUser, scansUsed: currentUser.scansUsed + 1 };
@@ -599,40 +617,146 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
         sender: 'ai',
         text: finding.fixIa
           ? t.aiInitialGreeting(finding.problema, finding.arquivo, finding.linha || '—', finding.fixIa)
-          : `${t.aiDisabled}. O finding continua disponível para análise manual.`
+          : t.aiNoFixYet
       }
     ]);
   };
 
-  const handleSendAiMessage = () => {
-    if (!inputAi.trim()) return;
+  const handleSendAiMessage = async () => {
+    const userText = inputAi.trim();
 
-    const userText = inputAi;
-    setChatMessages(prev => [...prev, { sender: 'user', text: userText }]);
-    setInputAi('');
+    if (!userText || !selectedFinding || isAiSending) return;
+
     setChatMessages(prev => [
       ...prev,
       {
-        sender: 'ai',
-        text: `${t.aiDisabled}. Configure a API da Anthropic no backend para habilitar respostas interativas.`
+        sender: 'user',
+        text: userText
       }
     ]);
+
+    setInputAi('');
+    setIsAiSending(true);
+
+    try {
+      const resultado = await enviarPerguntaClaude(
+        userText,
+        [
+          {
+            severity: selectedFinding.severidade,
+            pride_score: selectedFinding.prideScore,
+            file_path: selectedFinding.arquivo,
+            message: selectedFinding.problema,
+            fonte: selectedFinding.fonte,
+            rule_id: selectedFinding.ruleId,
+            ai_fix: selectedFinding.fixIa || null,
+          }
+        ],
+      );
+
+      setChatMessages(prev => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: resultado.resposta?.trim()
+            || t.chatUnavailable?.trim()
+            || t.chatUnavailable
+        }
+      ]);
+
+    } catch (erro: any) {
+      console.error(
+        '[CodeShield] Erro no assistente do finding:',
+        erro
+      );
+
+      const detalhe =
+        erro?.response?.data?.detail
+        || erro?.response?.data?.erro
+        || erro?.message;
+
+      setChatMessages(prev => [
+        ...prev,
+        {
+          sender: 'ai',
+          text:
+            t.chatUnavailable
+            + (detalhe ? ` ${detalhe}` : '')
+        }
+      ]);
+
+    } finally {
+      setIsAiSending(false);
+    }
   };
 
-  // O chat visual é mantido, mas não simula respostas enquanto a IA estiver desativada.
-  const handleSendClaudeMessage = () => {
-    if (!inputClaude.trim()) return;
+  const handleSendClaudeMessage = async () => {
+    const text = inputClaude.trim();
 
-    const text = inputClaude;
+    if (!text || isClaudeSending) return;
+
     setClaudeMessages(prev => [
       ...prev,
-      { sender: 'user', text },
       {
-        sender: 'claude',
-        text: `${t.aiDisabled}. Configure ANTHROPIC_API_KEY no backend para habilitar o chatbot.`
+        sender: 'user',
+        text
       }
     ]);
+
     setInputClaude('');
+    setIsClaudeSending(true);
+
+    try {
+      const contextoFindings = [...findings]
+        .sort((a, b) => b.prideScore - a.prideScore)
+        .slice(0, 10)
+        .map(finding => ({
+          severity: finding.severidade,
+          pride_score: finding.prideScore,
+          file_path: finding.arquivo,
+          message: finding.problema,
+          fonte: finding.fonte,
+          rule_id: finding.ruleId,
+          ai_fix: finding.fixIa || null,
+        }));
+
+      const resultado = await enviarPerguntaClaude(
+        text,
+        contextoFindings,
+      );
+
+      setClaudeMessages(prev => [
+        ...prev,
+        {
+          sender: 'claude',
+          text: resultado.resposta
+        }
+      ]);
+
+    } catch (erro: any) {
+      console.error(
+        '[CodeShield] Erro no chatbot Claude:',
+        erro
+      );
+
+      const detalhe =
+        erro?.response?.data?.detail
+        || erro?.response?.data?.erro
+        || erro?.message;
+
+      setClaudeMessages(prev => [
+        ...prev,
+        {
+          sender: 'claude',
+          text:
+            t.chatUnavailable
+            + (detalhe ? ` ${detalhe}` : '')
+        }
+      ]);
+
+    } finally {
+      setIsClaudeSending(false);
+    }
   };
 
   // UPLOAD DE FOTO DE PERFIL
@@ -686,6 +810,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
   const countLow = findings.filter(f => f.severidade === 'LOW').length;
   const countSast = findings.filter(f => f.fonte === 'semgrep').length;
   const countSca = findings.filter(f => f.fonte === 'trivy').length;
+  const countSecrets = findings.filter(f => f.fonte === 'gitleaks').length;
 
   // LANDING PAGE ESTILO NETFLIX
   if (showLandingScreen && !currentUser) {
@@ -1049,6 +1174,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                     <span>{scanMessage}</span>
                     <span>SAST: {scanSummary.semgrep}</span>
                     <span>SCA: {scanSummary.trivy}</span>
+                    <span>SECRETS: {scanSummary.gitleaks}</span>
                     <span>IA: {scanSummary.ia}</span>
                   </div>
                 )}
@@ -1061,7 +1187,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
               </section>
 
               {/* CARDS MÉTRICOS */}
-              <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-4">
+              <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
                 <div className="bg-[#080808] border border-zinc-900 rounded-xl p-5 flex items-center justify-between hover:border-zinc-700 transition-all">
                   <div>
                     <span className="text-[11px] font-bold text-zinc-400 tracking-wider block mb-2">{t.metricTotal}</span>
@@ -1084,6 +1210,14 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                     <span className="text-3xl font-bold text-cyan-400 font-mono">{countSca}</span>
                   </div>
                   <Shield className="w-5 h-5 text-cyan-400" />
+                </div>
+
+                <div className="bg-[#080808] border border-violet-900/40 rounded-xl p-5 flex items-center justify-between hover:border-violet-800 transition-all">
+                  <div>
+                    <span className="text-[11px] font-bold text-violet-400 tracking-wider block mb-2">{t.metricSecrets}</span>
+                    <span className="text-3xl font-bold text-violet-400 font-mono">{countSecrets}</span>
+                  </div>
+                  <Lock className="w-5 h-5 text-violet-400" />
                 </div>
 
                 {/* CRÍTICOS - VERMELHO */}
@@ -1163,6 +1297,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                       <option value="todos">{t.filterAllSources}</option>
                       <option value="semgrep">Semgrep / SAST</option>
                       <option value="trivy">Trivy / SCA</option>
+                      <option value="gitleaks">Gitleaks / Secrets</option>
                     </select>
                   </div>
                 </div>
@@ -1267,7 +1402,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
-                        <span>Análise de vulnerabilidades SAST</span>
+                        <span>Análise SAST, SCA e Secrets</span>
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
@@ -1315,7 +1450,7 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
-                        <span>SAST + ASPM em tempo real</span>
+                        <span>SAST + SCA + Secrets em tempo real</span>
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
@@ -1511,13 +1646,25 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                 type="text" 
                 value={inputClaude}
                 onChange={(e) => setInputClaude(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendClaudeMessage()}
-                placeholder={t.aiDisabled}
-                disabled
-                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-600 cursor-not-allowed"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSendClaudeMessage();
+                  }
+                }}
+                placeholder={isClaudeSending ? t.claudeThinking : t.claudePlaceholder}
+                disabled={isClaudeSending}
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-700 disabled:opacity-60"
               />
-              <button onClick={handleSendClaudeMessage} disabled className="p-2 bg-zinc-800 text-zinc-600 rounded-xl cursor-not-allowed">
-                <Send className="w-4 h-4" />
+              <button
+                onClick={handleSendClaudeMessage}
+                disabled={isClaudeSending || !inputClaude.trim()}
+                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isClaudeSending ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
               </button>
             </div>
           </div>
@@ -1556,17 +1703,26 @@ ${t.aiDisabled}: configure ANTHROPIC_API_KEY no backend para habilitar este recu
                 type="text" 
                 value={inputAi}
                 onChange={(e) => setInputAi(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSendAiMessage()}
-                placeholder={t.aiDisabled}
-                disabled
-                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-600 cursor-not-allowed"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSendAiMessage();
+                  }
+                }}
+                placeholder={isAiSending ? t.aiThinking : t.aiInputPlaceholder}
+                disabled={isAiSending}
+                className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-zinc-700 disabled:opacity-60"
               />
               <button 
                 onClick={handleSendAiMessage}
-                disabled
-                className="p-2 rounded-xl bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                disabled={isAiSending || !inputAi.trim()}
+                className="p-2 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ backgroundColor: BRAND_GREEN, color: '#000000' }}
               >
-                <Send className="w-4 h-4" />
+                {isAiSending ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
               </button>
             </div>
           </div>
