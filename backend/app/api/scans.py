@@ -2,37 +2,46 @@
 Módulo de rotas da CodeShield ASPM.
 
 Responsável por:
-- Clonar repositórios
+- Clonar repositórios com histórico Git completo
 - Executar Semgrep (SAST)
 - Executar Trivy (SCA)
-- Normalizar findings
-- Calcular score
+- Executar Gitleaks (Secrets Scanning)
+- Criar e manter histórico de scans
+- Normalizar findings no mesmo pipeline
+- Calcular Pride Score
 - Gerar remediação com IA quando disponível
-- Salvar findings no banco
+- Salvar findings no PostgreSQL
 - Disponibilizar endpoints para o frontend
 """
 
 from collections import Counter
+from datetime import datetime, timezone
 import os
 import shutil
 import subprocess
 import tempfile
 
 from dotenv import load_dotenv
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.database import SessionLocal
-from app.models import Finding
+from app.models import Finding, Scan
 
 from app.scanners.semgrep import (
     run_semgrep,
     normalizar_todos_findings,
 )
-
 from app.scanners.trivy import (
     run_trivy,
     normalizar_todos_findings_trivy,
+)
+from app.scanners.gitleaks import (
+    run_gitleaks,
+    normalizar_todos_findings_gitleaks,
+)
+from app.validators.fix_validator import (
+    validar_fix_re_scan,
 )
 
 
@@ -40,27 +49,17 @@ load_dotenv()
 
 router = APIRouter()
 
+THRESHOLD_IA = 7.0
 
-# ============================================================
-# FUNÇÕES AUXILIARES
-# ============================================================
+
+def agora_utc():
+    return datetime.now(timezone.utc)
+
 
 def normalizar_repo_url(repo_url: str) -> str:
-    """
-    Normaliza a URL usada para identificar um repositório.
-
-    Estas URLs passam a representar o mesmo repositório:
-
-    https://github.com/user/projeto
-    https://github.com/user/projeto/
-    https://github.com/user/projeto.git
-    """
-
     url = (repo_url or "").strip().rstrip("/")
-
     if url.lower().endswith(".git"):
         url = url[:-4]
-
     return url
 
 
@@ -70,19 +69,8 @@ def extrair_trecho_codigo(
     line: int,
     contexto: int = 3,
 ) -> str:
-    """
-    Lê o arquivo vulnerável e extrai algumas linhas ao redor
-    do problema.
-
-    É usado principalmente para findings do Semgrep.
-    """
-
     try:
-        caminho_completo = os.path.join(
-            repo_path,
-            file_path,
-        )
-
+        caminho_completo = os.path.join(repo_path, file_path)
         with open(
             caminho_completo,
             "r",
@@ -91,31 +79,17 @@ def extrair_trecho_codigo(
         ) as arquivo:
             linhas = arquivo.readlines()
 
-        linha_idx = max(
-            0,
-            int(line) - 1,
-        )
+        linha_idx = max(0, int(line) - 1)
+        inicio = max(0, linha_idx - contexto)
+        fim = min(len(linhas), linha_idx + contexto + 1)
 
-        inicio = max(
-            0,
-            linha_idx - contexto,
-        )
-
-        fim = min(
-            len(linhas),
-            linha_idx + contexto + 1,
-        )
-
-        return "".join(
-            linhas[inicio:fim]
-        ).strip()
+        return "".join(linhas[inicio:fim]).strip()
 
     except Exception as erro:
         print(
             "[AVISO] Não foi possível extrair "
             f"trecho de código: {erro}"
         )
-
         return ""
 
 
@@ -123,28 +97,10 @@ def limpar_caminho_arquivo(
     file_path: str,
     tmp: str,
 ) -> str:
-    """
-    Remove o caminho absoluto da pasta temporária
-    e mantém apenas o caminho relativo do arquivo.
-    """
-
     try:
-        caminho_limpo = (
-            file_path or ""
-        ).replace(
-            tmp,
-            "",
-        )
-
-        caminho_limpo = caminho_limpo.lstrip(
-            "\\/"
-        )
-
-        caminho_limpo = caminho_limpo.replace(
-            "\\",
-            "/",
-        )
-
+        caminho_limpo = (file_path or "").replace(tmp, "")
+        caminho_limpo = caminho_limpo.lstrip("\\/")
+        caminho_limpo = caminho_limpo.replace("\\", "/")
         return caminho_limpo or file_path
 
     except Exception:
@@ -152,151 +108,145 @@ def limpar_caminho_arquivo(
 
 
 def ia_disponivel() -> bool:
-    """
-    Verifica se existe uma chave da Anthropic configurada.
+    return bool(os.getenv("ANTHROPIC_API_KEY"))
 
-    A ausência da chave não impede os scans.
-    """
 
-    return bool(
-        os.getenv("ANTHROPIC_API_KEY")
+def obter_ultimo_scan(
+    db,
+    repo_url: str,
+):
+    return (
+        db.query(Scan)
+        .filter(
+            Scan.repo_url == normalizar_repo_url(repo_url),
+            Scan.status == "completed",
+        )
+        .order_by(Scan.started_at.desc())
+        .first()
     )
 
 
-# ============================================================
-# SCAN PRINCIPAL
-# ============================================================
+def marcar_scan_falhou(
+    db,
+    scan_id: str | None,
+):
+    if not db or not scan_id:
+        return
+
+    try:
+        db.rollback()
+
+        scan = (
+            db.query(Scan)
+            .filter(Scan.id == scan_id)
+            .first()
+        )
+
+        if scan:
+            scan.status = "failed"
+            scan.finished_at = agora_utc()
+            db.commit()
+
+    except Exception as erro:
+        db.rollback()
+        print(
+            "[AVISO] Não foi possível marcar "
+            f"o scan como failed: {erro}"
+        )
+
 
 @router.post("/scan")
 def scan_repo(repo_url: str):
     """
-    Executa o pipeline principal da CodeShield.
+    Executa Semgrep + Trivy + Gitleaks e salva uma nova execução
+    no histórico. Findings antigos NÃO são apagados.
 
-    Git Repository
-        ↓
-    Semgrep (SAST)
-        +
-    Trivy (SCA)
-        ↓
-    Normalização
-        ↓
-    Pride Score
-        ↓
-    Remediação IA opcional
-        ↓
-    PostgreSQL
+    O clone NÃO usa --depth 1 de propósito:
+    o Gitleaks precisa do histórico Git para procurar segredos
+    presentes em commits antigos.
     """
-
-    repo_url_recebida = (
-        repo_url or ""
-    ).strip()
-
-    repo_url_normalizada = normalizar_repo_url(
-        repo_url_recebida
-    )
+    repo_url_recebida = (repo_url or "").strip()
+    repo_url_normalizada = normalizar_repo_url(repo_url_recebida)
 
     if not repo_url_normalizada:
-
-        return {
-            "erro": (
-                "Informe uma URL "
-                "de repositório válida."
-            )
-        }
+        return {"erro": "Informe uma URL de repositório válida."}
 
     tmp = tempfile.mkdtemp()
-
-    db = None
+    db = SessionLocal()
+    scan_id = None
 
     try:
+        scan = Scan(
+            repo_url=repo_url_normalizada,
+            status="running",
+            total=0,
+            semgrep_total=0,
+            trivy_total=0,
+            started_at=agora_utc(),
+            finished_at=None,
+        )
 
-        # ========================================================
-        # 1. CLONAR REPOSITÓRIO
-        # ========================================================
+        db.add(scan)
+        db.commit()
+        db.refresh(scan)
+
+        scan_id = scan.id
 
         print("\n========================================")
         print("CODE SHIELD ASPM - NOVO SCAN")
         print("========================================")
+        print(f"[INFO] Scan ID: {scan_id}")
+        print(f"[INFO] Repositório: {repo_url_normalizada}")
 
-        print(
-            f"[INFO] Repositório: "
-            f"{repo_url_normalizada}"
-        )
+        print("\n----------------------------------------")
+        print("GIT CLONE - HISTÓRICO COMPLETO")
+        print("----------------------------------------")
 
         clone = subprocess.run(
             [
                 "git",
                 "clone",
-                "--depth",
-                "1",
                 repo_url_recebida,
                 tmp,
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
         )
 
         if clone.returncode != 0:
-
-            print(
-                "[ERRO] Não foi possível "
-                "clonar o repositório."
-            )
-
+            marcar_scan_falhou(db, scan_id)
             return {
                 "erro": "Não foi possível clonar",
                 "detalhe": clone.stderr,
+                "scan_id": scan_id,
             }
 
         print(
             "[OK] Repositório clonado "
-            "com sucesso."
+            "com histórico Git completo."
         )
-
-        # ========================================================
-        # 2. SEMGREP - SAST
-        # ========================================================
 
         print("\n----------------------------------------")
         print("SEMGREP - SAST")
         print("----------------------------------------")
 
         try:
-
-            semgrep_raw = run_semgrep(
-                tmp
-            )
-
+            semgrep_raw = run_semgrep(tmp)
         except Exception as erro:
-
-            print(
-                f"[ERRO] Semgrep falhou: {erro}"
-            )
-
+            print(f"[ERRO] Semgrep falhou: {erro}")
             semgrep_raw = []
 
-        print(
-            "[DEBUG] Semgrep retornou "
-            f"{len(semgrep_raw)} findings brutos."
-        )
-
         try:
-
-            semgrep_findings = (
-                normalizar_todos_findings(
-                    semgrep_raw,
-                    repo_url_normalizada,
-                )
+            semgrep_findings = normalizar_todos_findings(
+                semgrep_raw,
+                repo_url_normalizada,
             )
-
         except Exception as erro:
-
             print(
                 "[ERRO] Falha ao normalizar "
                 f"Semgrep: {erro}"
             )
-
             semgrep_findings = []
 
         print(
@@ -304,49 +254,26 @@ def scan_repo(repo_url: str):
             f"{len(semgrep_findings)} findings."
         )
 
-        # ========================================================
-        # 3. TRIVY - SCA
-        # ========================================================
-
         print("\n----------------------------------------")
         print("TRIVY - SCA")
         print("----------------------------------------")
 
         try:
-
-            trivy_raw = run_trivy(
-                tmp
-            )
-
+            trivy_raw = run_trivy(tmp)
         except Exception as erro:
-
-            print(
-                f"[ERRO] Trivy falhou: {erro}"
-            )
-
+            print(f"[ERRO] Trivy falhou: {erro}")
             trivy_raw = []
 
-        print(
-            "[DEBUG] Trivy retornou "
-            f"{len(trivy_raw)} findings brutos."
-        )
-
         try:
-
-            trivy_findings = (
-                normalizar_todos_findings_trivy(
-                    trivy_raw,
-                    repo_url_normalizada,
-                )
+            trivy_findings = normalizar_todos_findings_trivy(
+                trivy_raw,
+                repo_url_normalizada,
             )
-
         except Exception as erro:
-
             print(
                 "[ERRO] Falha ao normalizar "
                 f"Trivy: {erro}"
             )
-
             trivy_findings = []
 
         print(
@@ -354,122 +281,60 @@ def scan_repo(repo_url: str):
             f"{len(trivy_findings)} findings."
         )
 
-        # ========================================================
-        # 4. COMBINAR FINDINGS
-        # ========================================================
+        print("\n----------------------------------------")
+        print("GITLEAKS - SECRETS")
+        print("----------------------------------------")
+
+        try:
+            gitleaks_raw = run_gitleaks(tmp)
+        except Exception as erro:
+            print(f"[ERRO] Gitleaks falhou: {erro}")
+            gitleaks_raw = []
+
+        try:
+            gitleaks_findings = normalizar_todos_findings_gitleaks(
+                gitleaks_raw,
+                repo_url_normalizada,
+            )
+        except Exception as erro:
+            print(
+                "[ERRO] Falha ao normalizar "
+                f"Gitleaks: {erro}"
+            )
+            gitleaks_findings = []
+
+        print(
+            "[DEBUG] Gitleaks normalizado: "
+            f"{len(gitleaks_findings)} findings."
+        )
 
         findings = (
             semgrep_findings
-            +
-            trivy_findings
+            + trivy_findings
+            + gitleaks_findings
         )
 
         print("\n========================================")
         print("RESUMO DOS SCANNERS")
         print("========================================")
-
-        print(
-            f"Semgrep (SAST): "
-            f"{len(semgrep_findings)}"
-        )
-
-        print(
-            f"Trivy   (SCA):  "
-            f"{len(trivy_findings)}"
-        )
-
-        print(
-            f"Total:          "
-            f"{len(findings)}"
-        )
-
-        print(
-            "========================================"
-        )
-
-        # ========================================================
-        # 5. ABRIR BANCO
-        # ========================================================
-
-        db = SessionLocal()
-
-        # ========================================================
-        # 5.1 REMOVER RESULTADOS ANTIGOS DO MESMO REPOSITÓRIO
-        # ========================================================
-
-        removidos = (
-            db.query(Finding)
-            .filter(
-                Finding.repo_url
-                ==
-                repo_url_normalizada
-            )
-            .delete(
-                synchronize_session=False
-            )
-        )
-
-        print(
-            f"[INFO] {removidos} finding(s) antigo(s) "
-            f"removido(s) deste repositório."
-        )
-
-        # ========================================================
-        # 5.2 SE O NOVO SCAN NÃO ACHOU NADA
-        # ========================================================
-
-        if not findings:
-
-            db.commit()
-
-            print(
-                "[INFO] Nenhum finding encontrado "
-                "no novo scan."
-            )
-
-            return {
-                "repo": repo_url_normalizada,
-                "total": 0,
-                "semgrep": 0,
-                "trivy": 0,
-                "ia": (
-                    "ativada"
-                    if ia_disponivel()
-                    else "desativada"
-                ),
-            }
+        print(f"Semgrep  (SAST):    {len(semgrep_findings)}")
+        print(f"Trivy    (SCA):     {len(trivy_findings)}")
+        print(f"Gitleaks (SECRETS): {len(gitleaks_findings)}")
+        print(f"Total:              {len(findings)}")
+        print("========================================")
 
         salvos = 0
 
-        # ========================================================
-        # 6. PROCESSAR FINDINGS
-        # ========================================================
-
-        for i, finding in enumerate(
-            findings,
-            start=1,
-        ):
-
-            fonte = finding.get(
-                "fonte",
-                "desconhecida",
-            )
+        for i, finding in enumerate(findings, start=1):
+            fonte = finding.get("fonte", "desconhecida")
 
             print(
-                f"[DEBUG] Processando finding "
-                f"{i}/{len(findings)} "
-                f"[{fonte}]"
+                f"[DEBUG] Finding "
+                f"{i}/{len(findings)} [{fonte}]"
             )
 
-            # ====================================================
-            # SCORE
-            # ====================================================
-
             try:
-
-                from app.ai.scorer import (
-                    calculate_pride_score,
-                )
+                from app.ai.scorer import calculate_pride_score
 
                 score = calculate_pride_score(
                     finding["tipo"],
@@ -477,70 +342,38 @@ def scan_repo(repo_url: str):
                 )
 
             except Exception as erro:
-
                 print(
                     "[AVISO] Scorer falhou "
                     f"no finding {i}: {erro}"
                 )
-
                 score = 0.0
 
-            # ====================================================
-            # CAMINHO DO ARQUIVO
-            # ====================================================
-
-            file_path_limpo = (
-                limpar_caminho_arquivo(
-                    finding.get(
-                        "file_path",
-                        "",
-                    ),
-                    tmp,
-                )
+            file_path_limpo = limpar_caminho_arquivo(
+                finding.get("file_path", ""),
+                tmp,
             )
-
-            # ====================================================
-            # TRECHO DE CÓDIGO
-            # ====================================================
 
             trecho = ""
 
             if (
                 fonte == "semgrep"
-                and finding.get(
-                    "line",
-                    0,
-                ) > 0
+                and finding.get("line", 0) > 0
             ):
-
                 trecho = extrair_trecho_codigo(
                     tmp,
-                    finding.get(
-                        "file_path",
-                        "",
-                    ),
-                    finding.get(
-                        "line",
-                        0,
-                    ),
+                    finding.get("file_path", ""),
+                    finding.get("line", 0),
                 )
 
-            # ====================================================
-            # IA DE REMEDIAÇÃO - OPCIONAL
-            # ====================================================
-
             ai_fix = None
+            fix_validado = None
 
             if (
-                score >= 4.0
+                score >= THRESHOLD_IA
                 and ia_disponivel()
             ):
-
                 try:
-
-                    from app.ai.remediation import (
-                        generate_fix,
-                    )
+                    from app.ai.remediation import generate_fix
 
                     ai_fix = generate_fix(
                         rule_id=finding["rule_id"],
@@ -551,136 +384,103 @@ def scan_repo(repo_url: str):
                     )
 
                 except Exception as erro:
-
                     print(
                         "[AVISO] IA indisponível "
                         f"no finding {i}: {erro}"
                     )
-
                     ai_fix = None
 
-            # ====================================================
-            # SALVAR FINDING
-            # ====================================================
+            # ----------------------------------------------------
+            # VALIDAÇÃO DETERMINÍSTICA DO FIX - NÍVEL 1
+            # ----------------------------------------------------
+            # O re-scan é aplicável somente a findings do Semgrep.
+            # Trivy e Gitleaks precisam de validadores próprios.
+            if (
+                fonte == "semgrep"
+                and ai_fix
+            ):
+                try:
+                    resultado_validacao = validar_fix_re_scan(
+                        ai_fix=ai_fix,
+                        rule_id=finding["rule_id"],
+                        file_path=file_path_limpo,
+                    )
+
+                    fix_validado = (
+                        resultado_validacao.get(
+                            "validado"
+                        )
+                    )
+
+                    print(
+                        "[VALIDAÇÃO FIX] "
+                        f"{resultado_validacao.get('motivo')}"
+                    )
+
+                except Exception as erro:
+                    print(
+                        "[AVISO] Falha ao validar fix "
+                        f"do finding {i}: {erro}"
+                    )
+                    fix_validado = None
 
             try:
-
                 novo_finding = Finding(
+                    scan_id=scan_id,
                     repo_url=repo_url_normalizada,
                     fonte=fonte,
                     rule_id=finding["rule_id"],
                     severity=finding["tipo"],
                     file_path=file_path_limpo,
-                    line=finding.get(
-                        "line",
-                        0,
-                    ),
+                    line=finding.get("line", 0),
                     message=finding["message"],
                     pride_score=score,
                     ai_fix=ai_fix,
-                    fix_validado=None,
+                    fix_validado=fix_validado,
                 )
 
-                db.add(
-                    novo_finding
-                )
-
+                db.add(novo_finding)
                 salvos += 1
 
             except Exception as erro:
-
                 print(
                     "[ERRO] Falha ao criar "
                     f"Finding {i}: {erro}"
                 )
 
-        # ========================================================
-        # 7. COMMIT
-        # ========================================================
+        scan.total = salvos
+        scan.semgrep_total = len(semgrep_findings)
+        scan.trivy_total = len(trivy_findings)
+        scan.status = "completed"
+        scan.finished_at = agora_utc()
 
-        print(
-            f"[DEBUG] {salvos} findings adicionados "
-            f"à sessão."
-        )
-
-        print(
-            "[INFO] Realizando commit..."
-        )
-
-        try:
-
-            db.commit()
-
-            print(
-                "[OK] Commit realizado "
-                "com sucesso."
-            )
-
-            print(
-                f"[OK] {salvos} findings salvos."
-            )
-
-        except Exception as erro:
-
-            db.rollback()
-
-            print(
-                "[ERRO CRÍTICO] "
-                f"Commit falhou: {erro}"
-            )
-
-            return {
-                "erro": (
-                    "Falha ao salvar no banco: "
-                    f"{erro}"
-                )
-            }
-
-        # ========================================================
-        # 8. RESULTADO FINAL
-        # ========================================================
+        db.commit()
 
         print("\n========================================")
         print("SCAN FINALIZADO")
         print("========================================")
-
+        print(f"Scan ID:  {scan_id}")
+        print(f"Semgrep:  {len(semgrep_findings)}")
+        print(f"Trivy:    {len(trivy_findings)}")
+        print(f"Gitleaks: {len(gitleaks_findings)}")
+        print(f"Salvos:   {salvos}")
         print(
-            f"Semgrep: "
-            f"{len(semgrep_findings)}"
-        )
-
-        print(
-            f"Trivy:   "
-            f"{len(trivy_findings)}"
-        )
-
-        print(
-            f"Salvos:  "
-            f"{salvos}"
-        )
-
-        print(
-            "IA:      "
+            "IA:       "
             + (
                 "ativada"
                 if ia_disponivel()
                 else "desativada"
             )
         )
-
-        print(
-            "========================================"
-        )
+        print("========================================")
 
         return {
+            "scan_id": scan_id,
             "repo": repo_url_normalizada,
             "total": salvos,
-            "semgrep": len(
-                semgrep_findings
-            ),
-            "trivy": len(
-                trivy_findings
-            ),
+            "semgrep": len(semgrep_findings),
+            "trivy": len(trivy_findings),
+            "gitleaks": len(gitleaks_findings),
             "ia": (
                 "ativada"
                 if ia_disponivel()
@@ -688,23 +488,16 @@ def scan_repo(repo_url: str):
             ),
         }
 
-    # ============================================================
-    # ERROS GERAIS
-    # ============================================================
-
     except subprocess.TimeoutExpired:
+        marcar_scan_falhou(db, scan_id)
 
         return {
-            "erro": (
-                "Clone demorou mais "
-                "de 2 minutos"
-            )
+            "erro": "Clone demorou mais de 5 minutos",
+            "scan_id": scan_id,
         }
 
     except Exception as erro:
-
-        if db:
-            db.rollback()
+        marcar_scan_falhou(db, scan_id)
 
         print(
             "[ERRO CRÍTICO] "
@@ -712,113 +505,99 @@ def scan_repo(repo_url: str):
         )
 
         return {
-            "erro": str(erro)
+            "erro": str(erro),
+            "scan_id": scan_id,
         }
 
-    # ============================================================
-    # FINALIZAÇÃO
-    # ============================================================
-
     finally:
+        db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
-        if db:
-            db.close()
-
-        shutil.rmtree(
-            tmp,
-            ignore_errors=True,
-        )
-
-
-# ============================================================
-# LISTAR FINDINGS
-# ============================================================
 
 @router.get("/findings")
 def list_findings(
     severity: str = None,
     repo_url: str = None,
+    scan_id: str = None,
 ):
-    """
-    Retorna findings armazenados.
-
-    Filtros opcionais:
-    - severity
-    - repo_url
-    """
-
     db = SessionLocal()
 
     try:
-
-        query = db.query(
-            Finding
-        )
+        query = db.query(Finding)
 
         if severity:
-
             query = query.filter(
-                Finding.severity
-                ==
-                severity.upper()
+                Finding.severity == severity.upper()
             )
 
-        if repo_url:
-
+        if scan_id:
             query = query.filter(
-                Finding.repo_url
-                ==
-                normalizar_repo_url(
-                    repo_url
-                )
+                Finding.scan_id == scan_id
             )
 
-        resultado = (
+        elif repo_url:
+            ultimo_scan = obter_ultimo_scan(
+                db,
+                repo_url,
+            )
+
+            if not ultimo_scan:
+                return []
+
+            query = query.filter(
+                Finding.scan_id == ultimo_scan.id
+            )
+
+        return (
             query
-            .order_by(
-                Finding.pride_score.desc()
-            )
+            .order_by(Finding.pride_score.desc())
             .all()
         )
 
-        return resultado
-
     finally:
-
         db.close()
 
-
-# ============================================================
-# RESUMO
-# ============================================================
 
 @router.get("/resumo")
 def resumo(
     repo_url: str = None,
+    scan_id: str = None,
 ):
-    """
-    Retorna um resumo dos findings.
-
-    Se repo_url for informado,
-    retorna somente o resumo daquele repositório.
-    """
-
     db = SessionLocal()
 
     try:
+        query = db.query(Finding)
+        scan_usado = None
 
-        query = db.query(
-            Finding
-        )
-
-        if repo_url:
+        if scan_id:
+            scan_usado = (
+                db.query(Scan)
+                .filter(Scan.id == scan_id)
+                .first()
+            )
 
             query = query.filter(
-                Finding.repo_url
-                ==
-                normalizar_repo_url(
-                    repo_url
-                )
+                Finding.scan_id == scan_id
+            )
+
+        elif repo_url:
+            scan_usado = obter_ultimo_scan(
+                db,
+                repo_url,
+            )
+
+            if not scan_usado:
+                return {
+                    "scan_id": None,
+                    "total": 0,
+                    "por_severidade": {},
+                    "por_fonte": {},
+                    "criticos": 0,
+                    "altos": 0,
+                }
+
+            query = query.filter(
+                Finding.scan_id == scan_usado.id
             )
 
         findings = query.all()
@@ -836,78 +615,150 @@ def resumo(
         criticos = sum(
             1
             for finding in findings
-            if (
-                finding.pride_score or 0
-            ) >= 9
+            if (finding.pride_score or 0) >= 9
         )
 
         altos = sum(
             1
             for finding in findings
-            if (
-                7
-                <=
-                (finding.pride_score or 0)
-                <
-                9
-            )
+            if 7 <= (finding.pride_score or 0) < 9
         )
 
         return {
+            "scan_id": (
+                scan_usado.id
+                if scan_usado
+                else None
+            ),
             "total": len(findings),
-
-            "por_severidade": dict(
-                por_severidade
-            ),
-
-            "por_fonte": dict(
-                por_fonte
-            ),
-
+            "por_severidade": dict(por_severidade),
+            "por_fonte": dict(por_fonte),
             "criticos": criticos,
-
             "altos": altos,
         }
 
     finally:
-
         db.close()
 
 
-# ============================================================
-# LIMPAR FINDINGS
-# ============================================================
-
-@router.delete("/findings")
-def limpar(
+@router.get("/scans")
+def listar_scans(
     repo_url: str = None,
+    limit: int = 20,
 ):
-    """
-    Remove findings.
-
-    Sem repo_url:
-    remove todos.
-
-    Com repo_url:
-    remove apenas os findings daquele repositório.
-    """
-
     db = SessionLocal()
 
     try:
-
-        query = db.query(
-            Finding
+        limit = max(
+            1,
+            min(limit, 100),
         )
 
-        if repo_url:
+        query = db.query(Scan)
 
+        if repo_url:
+            query = query.filter(
+                Scan.repo_url
+                ==
+                normalizar_repo_url(repo_url)
+            )
+
+        return (
+            query
+            .order_by(Scan.started_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    finally:
+        db.close()
+
+
+@router.get("/scans/{scan_id}")
+def obter_scan(
+    scan_id: str,
+):
+    db = SessionLocal()
+
+    try:
+        scan = (
+            db.query(Scan)
+            .filter(Scan.id == scan_id)
+            .first()
+        )
+
+        if not scan:
+            raise HTTPException(
+                status_code=404,
+                detail="Scan não encontrado.",
+            )
+
+        return scan
+
+    finally:
+        db.close()
+
+
+@router.get("/scans/{scan_id}/findings")
+def findings_do_scan(
+    scan_id: str,
+    severity: str = None,
+):
+    db = SessionLocal()
+
+    try:
+        scan = (
+            db.query(Scan)
+            .filter(Scan.id == scan_id)
+            .first()
+        )
+
+        if not scan:
+            raise HTTPException(
+                status_code=404,
+                detail="Scan não encontrado.",
+            )
+
+        query = (
+            db.query(Finding)
+            .filter(Finding.scan_id == scan_id)
+        )
+
+        if severity:
+            query = query.filter(
+                Finding.severity == severity.upper()
+            )
+
+        return (
+            query
+            .order_by(Finding.pride_score.desc())
+            .all()
+        )
+
+    finally:
+        db.close()
+
+
+@router.delete("/findings")
+def limpar_findings(
+    repo_url: str = None,
+    scan_id: str = None,
+):
+    db = SessionLocal()
+
+    try:
+        query = db.query(Finding)
+
+        if scan_id:
+            query = query.filter(
+                Finding.scan_id == scan_id
+            )
+
+        elif repo_url:
             query = query.filter(
                 Finding.repo_url
                 ==
-                normalizar_repo_url(
-                    repo_url
-                )
+                normalizar_repo_url(repo_url)
             )
 
         quantidade = query.delete(
@@ -922,7 +773,6 @@ def limpar(
         }
 
     except Exception as erro:
-
         db.rollback()
 
         return {
@@ -933,8 +783,61 @@ def limpar(
         }
 
     finally:
-
         db.close()
+
+
+# ============================================================
+# VALIDAÇÃO AST - NÍVEL 2
+# ============================================================
+
+class ValidacaoASTRequest(BaseModel):
+    codigo_original: str
+    codigo_corrigido: str
+
+
+@router.post("/validar-ast")
+def validar_ast(
+    request: ValidacaoASTRequest,
+):
+    """
+    Valida estruturalmente uma alteração de código Python.
+
+    Esta rota:
+    - NÃO executa o código recebido;
+    - usa somente ast.parse() por meio do ast_validator;
+    - compara a estrutura do original com o corrigido;
+    - retorna similaridade e indicação de mudança cirúrgica.
+
+    É independente da API da Claude.
+    """
+
+    try:
+        from app.validators.ast_validator import (
+            validar_diff_ast,
+        )
+
+        resultado = validar_diff_ast(
+            request.codigo_original,
+            request.codigo_corrigido,
+        )
+
+        return resultado
+
+    except Exception as erro:
+        print(
+            "[ERRO] Falha na validação AST: "
+            f"{erro}"
+        )
+
+        return {
+            "valido": False,
+            "mudanca_cirurgica": False,
+            "similaridade": 0.0,
+            "motivo": (
+                "Falha interna durante "
+                f"a validação AST: {erro}"
+            ),
+        }
 
 
 # ============================================================
@@ -950,15 +853,7 @@ class PerguntaRequest(BaseModel):
 def chat_findings(
     request: PerguntaRequest,
 ):
-    """
-    Chatbot da CodeShield.
-
-    Enquanto não existir uma API key da Anthropic,
-    informa que a IA está desativada.
-    """
-
     if not ia_disponivel():
-
         return {
             "resposta": (
                 "O módulo de IA está temporariamente "
@@ -968,31 +863,22 @@ def chat_findings(
         }
 
     try:
-
         from app.ai.remediation import (
             client,
             MODEL,
         )
 
     except Exception as erro:
-
         return {
-            "resposta": (
-                f"IA indisponível: {erro}"
-            )
+            "resposta": f"IA indisponível: {erro}"
         }
 
     if client is None:
-
         return {
-            "resposta": (
-                "O módulo de IA está desativado."
-            )
+            "resposta": "O módulo de IA está desativado."
         }
 
-    findings_contexto = (
-        request.findings[:10]
-    )
+    findings_contexto = request.findings[:10]
 
     contexto = "\n".join(
         (
@@ -1000,6 +886,8 @@ def chat_findings(
             f"{finding.get('severity') or finding.get('severidade')} | "
             f"Score: "
             f"{finding.get('pride_score') or finding.get('prideScore')} | "
+            f"Fonte: "
+            f"{finding.get('fonte') or 'desconhecida'} | "
             f"Arquivo: "
             f"{finding.get('file_path') or finding.get('arquivo')} | "
             f"{finding.get('message') or finding.get('problema')}"
@@ -1022,7 +910,6 @@ Responda em português, de forma curta, clara e direta.
 """
 
     try:
-
         response = client.messages.create(
             model=MODEL,
             max_tokens=300,
@@ -1035,21 +922,16 @@ Responda em português, de forma curta, clara e direta.
         )
 
         for bloco in response.content:
-
             if bloco.type == "text":
-
                 return {
                     "resposta": bloco.text
                 }
 
         return {
-            "resposta": (
-                "Sem resposta disponível."
-            )
+            "resposta": "Sem resposta disponível."
         }
 
     except Exception as erro:
-
         print(
             f"[ERRO] Chat falhou: {erro}"
         )
