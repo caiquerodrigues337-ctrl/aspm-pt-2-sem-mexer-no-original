@@ -86,6 +86,7 @@ const getSourceLabel = (fonte: string) => {
   if (source === 'semgrep') return 'SAST · Semgrep';
   if (source === 'trivy') return 'SCA · Trivy';
   if (source === 'gitleaks') return 'SECRETS · Gitleaks';
+  if (source === 'zap') return 'DAST · OWASP ZAP';
   return fonte || 'Desconhecida';
 };
 
@@ -94,7 +95,64 @@ const getSourceColorClass = (fonte: string) => {
   if (source === 'semgrep') return 'text-emerald-400 border-emerald-900/60 bg-emerald-950/30';
   if (source === 'trivy') return 'text-cyan-400 border-cyan-900/60 bg-cyan-950/30';
   if (source === 'gitleaks') return 'text-violet-400 border-violet-900/60 bg-violet-950/30';
+  if (source === 'zap') return 'text-orange-400 border-orange-900/60 bg-orange-950/30';
   return 'text-zinc-300 border-zinc-800 bg-zinc-900';
+};
+
+
+const getFixValidationLabel = (
+  finding: Finding,
+  lang: 'pt' | 'en' | 'es',
+) => {
+  if (!finding.fixIa) return '';
+
+  if (finding.fonte !== 'semgrep') {
+    return lang === 'pt'
+      ? 'VALIDAÇÃO N/A'
+      : lang === 'es'
+        ? 'VALIDACIÓN N/A'
+        : 'VALIDATION N/A';
+  }
+
+  if (finding.fixValidado === true) {
+    return lang === 'pt'
+      ? 'FIX VALIDADO'
+      : lang === 'es'
+        ? 'FIX VALIDADO'
+        : 'FIX VALIDATED';
+  }
+
+  if (finding.fixValidado === false) {
+    return lang === 'pt'
+      ? 'FIX REPROVADO'
+      : lang === 'es'
+        ? 'FIX REPROBADO'
+        : 'FIX REJECTED';
+  }
+
+  return lang === 'pt'
+    ? 'VALIDAÇÃO INCONCLUSIVA'
+    : lang === 'es'
+      ? 'VALIDACIÓN INCONCLUSA'
+      : 'VALIDATION INCONCLUSIVE';
+};
+
+const getFixValidationClass = (
+  finding: Finding,
+) => {
+  if (finding.fonte !== 'semgrep') {
+    return 'text-zinc-400 border-zinc-700 bg-zinc-900/70';
+  }
+
+  if (finding.fixValidado === true) {
+    return 'text-emerald-400 border-emerald-800/70 bg-emerald-950/30';
+  }
+
+  if (finding.fixValidado === false) {
+    return 'text-rose-400 border-rose-800/70 bg-rose-950/30';
+  }
+
+  return 'text-amber-400 border-amber-800/70 bg-amber-950/30';
 };
 
 const mapBackendFinding = (finding: BackendFinding): Finding => ({
@@ -142,6 +200,7 @@ const translations: Record<string, any> = {
     heroTitle: "Proteja seu código antes que o ataque aconteça.",
     heroDesc: "Analise repositórios em busca de falhas de segurança, identifique vulnerabilidades em tempo real e utilize nossa IA nativa para correções.",
     repoPlaceholder: "https://github.com/usuario/repositorio.git",
+    dastPlaceholder: "http://localhost:3000 (opcional - alvo DAST)",
     scanBtn: "Iniciar Scan",
     scanningBtn: "Analisando...",
     scanLimitReached: "Limite de scans atingido para seu plano atual.",
@@ -154,6 +213,7 @@ const translations: Record<string, any> = {
     metricSast: "SAST",
     metricSca: "SCA",
     metricSecrets: "SECRETS",
+    metricDast: "DAST",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Buscar arquivo ou problema...",
@@ -168,10 +228,6 @@ const translations: Record<string, any> = {
     thIssue: "PROBLEMA",
     thFix: "FIX IA",
     aiDisabled: "IA desativada",
-    aiNoFixYet: "Este finding ainda não possui uma correção automática salva. Você pode perguntar à IA como corrigi-lo.",
-    aiThinking: "IA está respondendo...",
-    claudeThinking: "Claude está respondendo...",
-    chatUnavailable: "Não foi possível consultar a IA.",
     emptyFindings: "Nenhum finding encontrado até o momento.",
     emptyFindingsDesc: "Insira a URL de um repositório acima e clique em 'Iniciar Scan' para analisar.",
 
@@ -233,6 +289,7 @@ const translations: Record<string, any> = {
     heroTitle: "Protect your code before the attack happens.",
     heroDesc: "Scan repositories for security flaws, identify vulnerabilities in real time, and use native AI for automatic fixes.",
     repoPlaceholder: "https://github.com/user/repository.git",
+    dastPlaceholder: "http://localhost:3000 (optional - DAST target)",
     scanBtn: "Start Scan",
     scanningBtn: "Scanning...",
     scanLimitReached: "Scan limit reached for your current plan.",
@@ -245,6 +302,7 @@ const translations: Record<string, any> = {
     metricSast: "SAST",
     metricSca: "SCA",
     metricSecrets: "SECRETS",
+    metricDast: "DAST",
 
     findingsTitle: "Security Findings",
     searchPlaceholder: "Search file or vulnerability...",
@@ -259,10 +317,6 @@ const translations: Record<string, any> = {
     thIssue: "ISSUE",
     thFix: "AI FIX",
     aiDisabled: "AI disabled",
-    aiNoFixYet: "This finding does not have a saved automatic fix yet. You can ask the AI how to fix it.",
-    aiThinking: "AI is responding...",
-    claudeThinking: "Claude is responding...",
-    chatUnavailable: "Unable to contact the AI.",
     emptyFindings: "No findings discovered yet.",
     emptyFindingsDesc: "Enter a repository URL above and click 'Start Scan' to analyze.",
 
@@ -324,6 +378,7 @@ const translations: Record<string, any> = {
     heroTitle: "Protege tu código antes de que ocurra el ataque.",
     heroDesc: "Escanea repositorios en busca de fallos de seguridad, identifica vulnerabilidades en tiempo real y usa nuestra IA nativa para correcciones.",
     repoPlaceholder: "https://github.com/usuario/repositorio.git",
+    dastPlaceholder: "http://localhost:3000 (opcional - objetivo DAST)",
     scanBtn: "Iniciar Escaneo",
     scanningBtn: "Analizando...",
     scanLimitReached: "Límite de escaneos alcanzado para tu plan actual.",
@@ -336,6 +391,7 @@ const translations: Record<string, any> = {
     metricSast: "SAST",
     metricSca: "SCA",
     metricSecrets: "SECRETS",
+    metricDast: "DAST",
 
     findingsTitle: "Hallazgos de Seguridad",
     searchPlaceholder: "Buscar archivo o problema...",
@@ -350,10 +406,6 @@ const translations: Record<string, any> = {
     thIssue: "PROBLEMA",
     thFix: "SOLUCIÓN IA",
     aiDisabled: "IA desactivada",
-    aiNoFixYet: "Este hallazgo todavía no tiene una corrección automática guardada. Puedes preguntar a la IA cómo corregirlo.",
-    aiThinking: "La IA está respondiendo...",
-    claudeThinking: "Claude está respondiendo...",
-    chatUnavailable: "No fue posible consultar la IA.",
     emptyFindings: "No se encontraron hallazgos hasta el momento.",
     emptyFindingsDesc: "Ingrese una URL de repositorio arriba y haga clic en 'Iniciar Escaneo'.",
 
@@ -428,6 +480,7 @@ export default function App() {
   const t = translations[lang] || translations.pt;
 
   const [repoUrl, setRepoUrl] = useState('');
+  const [targetUrl, setTargetUrl] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
   const [scanProgress, setScanProgress] = useState(0);
@@ -557,6 +610,8 @@ export default function App() {
     }
 
     const repo = repoUrl.trim();
+    const target = targetUrl.trim();
+
     if (!repo) {
       alert(lang === 'pt' ? 'Por favor, insira a URL de um repositório Git.' : lang === 'es' ? 'Ingrese la URL de un repositorio Git.' : 'Please enter a Git repository URL.');
       return;
@@ -570,9 +625,21 @@ export default function App() {
 
     try {
       setScanProgress(25);
-      setScanMessage(lang === 'pt' ? 'Executando Semgrep (SAST), Trivy (SCA) e Gitleaks (Secrets)...' : lang === 'es' ? 'Ejecutando Semgrep (SAST), Trivy (SCA) y Gitleaks (Secrets)...' : 'Running Semgrep (SAST), Trivy (SCA), and Gitleaks (Secrets)...');
+      setScanMessage(
+        target
+          ? (lang === 'pt'
+              ? 'Executando Semgrep (SAST), Trivy (SCA), Gitleaks (Secrets) e OWASP ZAP (DAST)...'
+              : lang === 'es'
+                ? 'Ejecutando Semgrep (SAST), Trivy (SCA), Gitleaks (Secrets) y OWASP ZAP (DAST)...'
+                : 'Running Semgrep (SAST), Trivy (SCA), Gitleaks (Secrets), and OWASP ZAP (DAST)...')
+          : (lang === 'pt'
+              ? 'Executando Semgrep (SAST), Trivy (SCA) e Gitleaks (Secrets)...'
+              : lang === 'es'
+                ? 'Ejecutando Semgrep (SAST), Trivy (SCA) y Gitleaks (Secrets)...'
+                : 'Running Semgrep (SAST), Trivy (SCA), and Gitleaks (Secrets)...')
+      );
 
-      const resultado = await iniciarScan(repo);
+      const resultado = await iniciarScan(repo, target || undefined);
       setScanSummary(resultado);
 
       setScanProgress(80);
@@ -584,10 +651,10 @@ export default function App() {
       setScanProgress(100);
       setScanMessage(
         lang === 'pt'
-          ? `Scan concluído: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
+          ? `Scan concluído: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets + ${resultado.zap ?? 0} DAST.`
           : lang === 'es'
-            ? `Escaneo finalizado: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
-            : `Scan complete: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets.`
+            ? `Escaneo finalizado: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets + ${resultado.zap ?? 0} DAST.`
+            : `Scan complete: ${resultado.semgrep} SAST + ${resultado.trivy} SCA + ${resultado.gitleaks} Secrets + ${resultado.zap ?? 0} DAST.`
       );
 
       const updated = { ...currentUser, scansUsed: currentUser.scansUsed + 1 };
@@ -617,7 +684,7 @@ export default function App() {
         sender: 'ai',
         text: finding.fixIa
           ? t.aiInitialGreeting(finding.problema, finding.arquivo, finding.linha || '—', finding.fixIa)
-          : t.aiNoFixYet
+          : `${t.aiDisabled}. O finding continua disponível para análise manual.`
       }
     ]);
   };
@@ -658,9 +725,7 @@ export default function App() {
         ...prev,
         {
           sender: 'ai',
-          text: resultado.resposta?.trim()
-            || t.chatUnavailable?.trim()
-            || t.chatUnavailable
+          text: resultado.resposta
         }
       ]);
 
@@ -680,8 +745,8 @@ export default function App() {
         {
           sender: 'ai',
           text:
-            t.chatUnavailable
-            + (detalhe ? ` ${detalhe}` : '')
+            'Não foi possível consultar a IA'
+            + (detalhe ? `: ${detalhe}` : '.')
         }
       ]);
 
@@ -707,18 +772,15 @@ export default function App() {
     setIsClaudeSending(true);
 
     try {
-      const contextoFindings = [...findings]
-        .sort((a, b) => b.prideScore - a.prideScore)
-        .slice(0, 10)
-        .map(finding => ({
-          severity: finding.severidade,
-          pride_score: finding.prideScore,
-          file_path: finding.arquivo,
-          message: finding.problema,
-          fonte: finding.fonte,
-          rule_id: finding.ruleId,
-          ai_fix: finding.fixIa || null,
-        }));
+      const contextoFindings = findings.map(finding => ({
+        severity: finding.severidade,
+        pride_score: finding.prideScore,
+        file_path: finding.arquivo,
+        message: finding.problema,
+        fonte: finding.fonte,
+        rule_id: finding.ruleId,
+        ai_fix: finding.fixIa || null,
+      }));
 
       const resultado = await enviarPerguntaClaude(
         text,
@@ -749,8 +811,8 @@ export default function App() {
         {
           sender: 'claude',
           text:
-            t.chatUnavailable
-            + (detalhe ? ` ${detalhe}` : '')
+            'Não foi possível consultar a IA'
+            + (detalhe ? `: ${detalhe}` : '.')
         }
       ]);
 
@@ -811,6 +873,7 @@ export default function App() {
   const countSast = findings.filter(f => f.fonte === 'semgrep').length;
   const countSca = findings.filter(f => f.fonte === 'trivy').length;
   const countSecrets = findings.filter(f => f.fonte === 'gitleaks').length;
+  const countDast = findings.filter(f => f.fonte === 'zap').length;
 
   // LANDING PAGE ESTILO NETFLIX
   if (showLandingScreen && !currentUser) {
@@ -1128,30 +1191,49 @@ export default function App() {
               <section className="bg-[#080808] border border-zinc-900 rounded-2xl p-6 space-y-5 transition-all hover:border-zinc-800">
                 <div className="flex items-center space-x-2 text-xs font-mono text-zinc-400">
                   <span style={{ color: BRAND_GREEN }}>&gt;_</span>
-                  <span className="tracking-wider">REPOSITORY_SCANNER.SH</span>
+                  <span className="tracking-wider">ASPM_SCANNER.SH</span>
                 </div>
 
-                <div className="flex flex-col md:flex-row items-center gap-4">
-                  <div className="relative flex-1 w-full">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-sm" style={{ color: BRAND_GREEN }}>$</span>
-                    <input
-                      type="text"
-                      value={repoUrl}
-                      onChange={(e) => setRepoUrl(e.target.value)}
-                      placeholder={t.repoPlaceholder}
-                      className="w-full bg-black border border-zinc-800/80 rounded-xl pl-9 pr-4 py-3.5 text-sm font-mono focus:outline-none focus:border-zinc-700 transition-all"
-                      style={{ color: BRAND_GREEN }}
-                    />
+                <div className="flex flex-col lg:flex-row items-stretch gap-4">
+                  <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="relative w-full">
+                      <Code2 className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: BRAND_GREEN }} />
+                      <input
+                        type="text"
+                        value={repoUrl}
+                        onChange={(e) => setRepoUrl(e.target.value)}
+                        placeholder={t.repoPlaceholder}
+                        className="w-full bg-black border border-zinc-800/80 rounded-xl pl-11 pr-4 py-3.5 text-sm font-mono focus:outline-none focus:border-zinc-700 transition-all"
+                        style={{ color: BRAND_GREEN }}
+                      />
+                    </div>
+
+                    <div className="relative w-full">
+                      <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-400" />
+                      <input
+                        type="url"
+                        value={targetUrl}
+                        onChange={(e) => setTargetUrl(e.target.value)}
+                        placeholder={t.dastPlaceholder}
+                        className="w-full bg-black border border-orange-900/40 rounded-xl pl-11 pr-4 py-3.5 text-sm font-mono text-orange-300 focus:outline-none focus:border-orange-700 transition-all"
+                      />
+                    </div>
                   </div>
+
                   <button 
                     onClick={handleStartScan}
                     disabled={isScanning}
                     style={{ backgroundColor: BRAND_GREEN, color: '#000000' }} 
-                    className="w-full md:w-auto px-8 py-3.5 font-bold text-sm rounded-xl flex items-center justify-center space-x-2 disabled:opacity-50 hover:opacity-90 hover:scale-105 transition-all whitespace-nowrap shadow-lg"
+                    className="w-full lg:w-auto px-8 py-3.5 font-bold text-sm rounded-xl flex items-center justify-center space-x-2 disabled:opacity-50 hover:opacity-90 hover:scale-105 transition-all whitespace-nowrap shadow-lg"
                   >
                     {isScanning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
                     <span>{isScanning ? t.scanningBtn : t.scanBtn}</span>
                   </button>
+                </div>
+
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-[10px] font-mono text-zinc-500">
+                  <span>REPO → SAST / SCA / SECRETS</span>
+                  <span className="text-orange-400/80">TARGET URL → DAST / OWASP ZAP (opcional)</span>
                 </div>
 
                 {isScanning && (
@@ -1175,6 +1257,7 @@ export default function App() {
                     <span>SAST: {scanSummary.semgrep}</span>
                     <span>SCA: {scanSummary.trivy}</span>
                     <span>SECRETS: {scanSummary.gitleaks}</span>
+                    <span className="text-orange-300">DAST: {scanSummary.zap ?? 0}</span>
                     <span>IA: {scanSummary.ia}</span>
                   </div>
                 )}
@@ -1187,7 +1270,7 @@ export default function App() {
               </section>
 
               {/* CARDS MÉTRICOS */}
-              <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
+              <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-9 gap-4">
                 <div className="bg-[#080808] border border-zinc-900 rounded-xl p-5 flex items-center justify-between hover:border-zinc-700 transition-all">
                   <div>
                     <span className="text-[11px] font-bold text-zinc-400 tracking-wider block mb-2">{t.metricTotal}</span>
@@ -1218,6 +1301,14 @@ export default function App() {
                     <span className="text-3xl font-bold text-violet-400 font-mono">{countSecrets}</span>
                   </div>
                   <Lock className="w-5 h-5 text-violet-400" />
+                </div>
+
+                <div className="bg-[#080808] border border-orange-900/40 rounded-xl p-5 flex items-center justify-between hover:border-orange-800 transition-all">
+                  <div>
+                    <span className="text-[11px] font-bold text-orange-400 tracking-wider block mb-2">{t.metricDast}</span>
+                    <span className="text-3xl font-bold text-orange-400 font-mono">{countDast}</span>
+                  </div>
+                  <Globe className="w-5 h-5 text-orange-400" />
                 </div>
 
                 {/* CRÍTICOS - VERMELHO */}
@@ -1298,6 +1389,7 @@ export default function App() {
                       <option value="semgrep">Semgrep / SAST</option>
                       <option value="trivy">Trivy / SCA</option>
                       <option value="gitleaks">Gitleaks / Secrets</option>
+                      <option value="zap">OWASP ZAP / DAST</option>
                     </select>
                   </div>
                 </div>
@@ -1334,15 +1426,34 @@ export default function App() {
                             <td className="px-4 py-4 font-bold" style={{ color: BRAND_GREEN }}>{finding.prideScore.toFixed(1)}</td>
                             <td className="px-4 py-4 text-slate-300 min-w-[280px] max-w-[520px] whitespace-normal">{finding.problema}</td>
                             <td className="px-4 py-4">
-                              <button 
-                                onClick={() => handleOpenAiModal(finding)}
-                                disabled={!finding.fixIa}
-                                style={finding.fixIa ? { color: BRAND_GREEN, borderColor: BRAND_GREEN + "40" } : {}}
-                                className={`px-3 py-1 border rounded-lg text-[11px] font-sans font-medium flex items-center space-x-1 transition-all whitespace-nowrap ${finding.fixIa ? 'bg-zinc-900 hover:scale-105' : 'bg-zinc-950 border-zinc-800 text-zinc-600 cursor-not-allowed'}`}
-                              >
-                                <Sparkles className="w-3 h-3" />
-                                <span>{finding.fixIa ? (lang === 'pt' ? 'Ver correção' : lang === 'es' ? 'Ver corrección' : 'View fix') : t.aiDisabled}</span>
-                              </button>
+                              <div className="flex flex-col items-start gap-2">
+                                <button 
+                                  onClick={() => handleOpenAiModal(finding)}
+                                  disabled={!finding.fixIa}
+                                  style={finding.fixIa ? { color: BRAND_GREEN, borderColor: BRAND_GREEN + "40" } : {}}
+                                  className={`px-3 py-1 border rounded-lg text-[11px] font-sans font-medium flex items-center space-x-1 transition-all whitespace-nowrap ${finding.fixIa ? 'bg-zinc-900 hover:scale-105' : 'bg-zinc-950 border-zinc-800 text-zinc-600 cursor-not-allowed'}`}
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  <span>{finding.fixIa ? (lang === 'pt' ? 'Ver correção' : lang === 'es' ? 'Ver corrección' : 'View fix') : t.aiDisabled}</span>
+                                </button>
+
+                                {finding.fixIa && (
+                                  <span
+                                    className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-bold tracking-wide whitespace-nowrap ${getFixValidationClass(finding)}`}
+                                  >
+                                    {finding.fixValidado === true && (
+                                      <CheckCircle2 className="w-3 h-3 mr-1" />
+                                    )}
+                                    {finding.fixValidado === false && (
+                                      <X className="w-3 h-3 mr-1" />
+                                    )}
+                                    {finding.fixValidado === null && finding.fonte === 'semgrep' && (
+                                      <AlertTriangle className="w-3 h-3 mr-1" />
+                                    )}
+                                    {getFixValidationLabel(finding, lang)}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -1502,7 +1613,7 @@ export default function App() {
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
-                        <span>Integração CI/CD nativa & Webhooks</span>
+                        <span>Integração CI/CD nativa &amp; Webhooks</span>
                       </li>
                       <li className="flex items-center space-x-2">
                         <Check className="w-4 h-4" style={{ color: BRAND_GREEN }} />
@@ -1651,7 +1762,7 @@ export default function App() {
                     handleSendClaudeMessage();
                   }
                 }}
-                placeholder={isClaudeSending ? t.claudeThinking : t.claudePlaceholder}
+                placeholder={isClaudeSending ? 'Claude está respondendo...' : t.claudePlaceholder}
                 disabled={isClaudeSending}
                 className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-700 disabled:opacity-60"
               />
@@ -1675,11 +1786,31 @@ export default function App() {
       {selectedFinding && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-[#0a0a0a] border border-zinc-800 rounded-2xl w-full max-w-xl flex flex-col h-[500px] shadow-2xl">
-            <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
-              <div className="flex items-center space-x-2 font-bold text-sm" style={{ color: BRAND_GREEN }}>
-                <Sparkles className="w-4 h-4 animate-pulse" />
-                <span>{t.aiTitle}</span>
+            <div className="p-4 border-b border-zinc-800 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center space-x-2 font-bold text-sm" style={{ color: BRAND_GREEN }}>
+                  <Sparkles className="w-4 h-4 animate-pulse" />
+                  <span>{t.aiTitle}</span>
+                </div>
+
+                {selectedFinding.fixIa && (
+                  <span
+                    className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-bold tracking-wide whitespace-nowrap ${getFixValidationClass(selectedFinding)}`}
+                  >
+                    {selectedFinding.fixValidado === true && (
+                      <CheckCircle2 className="w-3 h-3 mr-1" />
+                    )}
+                    {selectedFinding.fixValidado === false && (
+                      <X className="w-3 h-3 mr-1" />
+                    )}
+                    {selectedFinding.fixValidado === null && selectedFinding.fonte === 'semgrep' && (
+                      <AlertTriangle className="w-3 h-3 mr-1" />
+                    )}
+                    {getFixValidationLabel(selectedFinding, lang)}
+                  </span>
+                )}
               </div>
+
               <button onClick={() => setSelectedFinding(null)} className="text-zinc-500 hover:text-white transition-colors">
                 <X className="w-5 h-5" />
               </button>
@@ -1708,7 +1839,7 @@ export default function App() {
                     handleSendAiMessage();
                   }
                 }}
-                placeholder={isAiSending ? t.aiThinking : t.aiInputPlaceholder}
+                placeholder={isAiSending ? 'IA está respondendo...' : t.aiInputPlaceholder}
                 disabled={isAiSending}
                 className="flex-1 bg-black border border-zinc-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-zinc-700 disabled:opacity-60"
               />
