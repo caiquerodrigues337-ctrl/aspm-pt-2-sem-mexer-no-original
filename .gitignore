@@ -5,4 +5,4 @@ node_modules/
 .vscode/
 *.egg-info/
 dist/
-build/
+build/*.backup
