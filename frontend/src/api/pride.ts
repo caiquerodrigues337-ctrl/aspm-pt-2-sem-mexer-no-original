@@ -24,6 +24,8 @@ export interface ScanResponse {
   semgrep: number
   trivy: number
   gitleaks: number
+  zap: number
+  target_url: string | null
   ia: string
 }
 
@@ -41,13 +43,17 @@ export interface LimparResponse {
   removidos: number
 }
 
-export const iniciarScan = async (repoUrl: string): Promise<ScanResponse> => {
+export const iniciarScan = async (
+  repoUrl: string,
+  targetUrl?: string,
+): Promise<ScanResponse> => {
   const response = await axios.post<ScanResponse>(
     `${API}/scan`,
     null,
     {
       params: {
         repo_url: repoUrl,
+        target_url: targetUrl?.trim() || undefined,
       },
     },
   )
@@ -82,38 +88,19 @@ export const limparFindings = async (): Promise<LimparResponse> => {
   return response.data
 }
 
-export interface ChatFindingContext {
-  severity?: string
-  severidade?: string
-  pride_score?: number
-  prideScore?: number
-  file_path?: string
-  arquivo?: string
-  message?: string
-  problema?: string
-  fonte?: string
-  rule_id?: string
-  ruleId?: string
-  ai_fix?: string | null
-  fixIa?: string | null
-}
-
 export interface ChatResponse {
   resposta: string
 }
 
 export const enviarPerguntaClaude = async (
   pergunta: string,
-  findings: ChatFindingContext[],
+  findings: any[],
 ): Promise<ChatResponse> => {
   const response = await axios.post<ChatResponse>(
     `${API}/chat`,
     {
       pergunta,
       findings,
-    },
-    {
-      timeout: 120000,
     },
   )
 
