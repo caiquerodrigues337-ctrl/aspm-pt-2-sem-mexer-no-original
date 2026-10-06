@@ -1,84 +1,39 @@
 # CodeShield ASPM
 
-Plataforma acadêmica de **Application Security Posture Management (ASPM)** desenvolvida para o FIAP Challenge em parceria com a Pride Security.
+O **CodeShield ASPM** é um projeto acadêmico desenvolvido para o FIAP Challenge em parceria com a Pride Security. A proposta do projeto é reunir diferentes tipos de análise de segurança em uma única plataforma, facilitando a identificação, priorização e acompanhamento de vulnerabilidades em aplicações.
 
-O CodeShield centraliza diferentes técnicas de análise de segurança em uma única esteira, normaliza os resultados, calcula um **Pride Score**, persiste os findings e apresenta tudo em um dashboard React.
+Nesta etapa do projeto, a plataforma foi ampliada para trabalhar com **SAST, SCA, Secrets Scanning e DAST**, além de uma prova de conceito para validar de forma determinística algumas correções sugeridas por inteligência artificial.
 
-## Funcionalidades
+## Objetivo do projeto
 
-- **SAST — Semgrep**
-  - análise estática do código;
-  - execução com múltiplas configurações;
-  - normalização e remoção de duplicados.
+O objetivo principal do CodeShield é centralizar informações de segurança encontradas por diferentes ferramentas e apresentar esses resultados de forma organizada no dashboard.
 
-- **SCA — Trivy**
-  - análise de dependências;
-  - identificação de CVEs;
-  - versão instalada e versão corrigida quando disponíveis.
+A plataforma recebe uma URL de repositório Git e, quando desejado, também uma URL de uma aplicação em execução. A partir disso, diferentes scanners são executados e seus resultados são transformados em um formato único.
 
-- **Secrets Scanning — Gitleaks**
-  - análise do histórico Git completo;
-  - identificação de possíveis segredos expostos.
+Atualmente o projeto utiliza:
 
-- **DAST — OWASP ZAP**
-  - ZAP Baseline executado em Docker;
-  - análise passiva de uma aplicação em execução;
-  - target independente da URL do repositório;
-  - localhost convertido para `host.docker.internal` dentro do container.
+- **Semgrep** para SAST;
+- **Trivy** para SCA;
+- **Gitleaks** para Secrets Scanning;
+- **OWASP ZAP** para DAST;
+- **Pride Score** para priorização dos findings;
+- **Anthropic Claude** para sugestões de correção e chatbot;
+- **PostgreSQL** para persistência dos scans e findings.
 
-- **Pride Score**
-  - priorização dos findings;
-  - unificação dos resultados dos diferentes scanners em uma mesma interface.
+## Tecnologias utilizadas
 
-- **IA com Anthropic Claude**
-  - geração de recomendações de correção;
-  - chatbot contextual baseado nos findings;
-  - ativação somente quando a chave está disponível.
-  - requer créditos válidos na API da Anthropic.
-
-- **Validação determinística de fix — PoC**
-  - aplicada aos findings do Semgrep;
-  - confirma a vulnerabilidade no arquivo original;
-  - aplica a sugestão da IA somente em uma cópia temporária;
-  - valida a estrutura Python com AST;
-  - executa novamente o Semgrep;
-  - aprova somente quando a mesma `rule_id` desaparece;
-  - **o código sugerido pela IA não é executado**.
-
-- **Histórico de scans**
-  - cada execução recebe um `scan_id`;
-  - findings anteriores não são apagados automaticamente;
-  - resultados são armazenados no PostgreSQL.
-
-## Arquitetura
+O projeto foi desenvolvido com as seguintes tecnologias:
 
 ```text
-Repositório Git
-   │
-   ├── Semgrep ─── SAST
-   ├── Trivy ───── SCA
-   └── Gitleaks ── Secrets
-                    │
-Aplicação em execução
-   │
-   └── OWASP ZAP ─ DAST
-                    │
-                    ▼
-              Normalização
-                    │
-                    ▼
-               Pride Score
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-   Anthropic Claude      PostgreSQL
-          │                   │
-          └─────────┬─────────┘
-                    ▼
-             FastAPI Backend
-                    │
-                    ▼
-             React Frontend
+Backend: Python + FastAPI
+Frontend: React + TypeScript
+Banco de dados: PostgreSQL
+Containerização: Docker
+SAST: Semgrep
+SCA: Trivy
+Secrets Scanning: Gitleaks
+DAST: OWASP ZAP
+IA: Anthropic Claude
 ```
 
 ## Estrutura principal
@@ -115,39 +70,192 @@ CodeShield-ASPM/
 └── docker-compose.yml
 ```
 
-## Pré-requisitos
+## Funcionamento da esteira
 
-- Python 3
-- Node.js + npm
-- Git
-- Docker Desktop
-- PostgreSQL
-- Semgrep
-- Trivy
-- Gitleaks
-- acesso ao Docker Hub/GHCR para a imagem do OWASP ZAP
+O CodeShield trabalha com dois tipos de entrada.
 
-## Variáveis de ambiente
-
-O backend utiliza o arquivo:
+A primeira é a URL do repositório:
 
 ```text
-backend/.env
+repo_url
 ```
 
-Para a integração com Anthropic, o projeto utiliza:
+Essa URL é utilizada por:
+
+```text
+Semgrep
+Trivy
+Gitleaks
+```
+
+A segunda entrada é opcional:
+
+```text
+target_url
+```
+
+Ela representa a aplicação que será analisada pelo OWASP ZAP.
+
+O fluxo pode ser representado da seguinte forma:
+
+```text
+Repositório Git
+   │
+   ├── Semgrep  → SAST
+   ├── Trivy    → SCA
+   └── Gitleaks → Secrets
+                    │
+Aplicação em execução
+   │
+   └── OWASP ZAP → DAST
+                    │
+                    ▼
+              Normalização
+                    │
+                    ▼
+               Pride Score
+                    │
+                    ▼
+              PostgreSQL
+                    │
+                    ▼
+              Frontend React
+```
+
+Quando a IA está disponível, alguns findings também podem receber uma sugestão de correção gerada pelo Claude.
+
+## Semgrep — SAST
+
+O Semgrep é utilizado para análise estática do código-fonte.
+
+O scanner executa mais de uma configuração e depois remove resultados duplicados antes de enviar os findings para o restante da plataforma.
+
+Os resultados são normalizados com informações como:
+
+```text
+fonte
+rule_id
+severidade
+arquivo
+linha
+mensagem
+```
+
+## Trivy — SCA
+
+O Trivy foi adicionado para identificar vulnerabilidades conhecidas em dependências do projeto.
+
+Quando disponível no resultado, o finding também apresenta informações como:
+
+```text
+CVE
+pacote
+versão instalada
+versão corrigida
+```
+
+## Gitleaks — Secrets Scanning
+
+O Gitleaks procura possíveis segredos expostos no repositório.
+
+Para permitir esse tipo de análise, o CodeShield faz o clone do repositório mantendo o histórico Git completo, pois um segredo pode ter sido removido do código atual, mas ainda continuar presente em commits anteriores.
+
+## OWASP ZAP — DAST
+
+O OWASP ZAP foi integrado usando Docker.
+
+Nesta versão foi utilizado o **ZAP Baseline**, que realiza crawling e análise passiva da aplicação, sem executar o Active Scan.
+
+Exemplo de target:
+
+```text
+http://localhost:3000
+```
+
+Como o ZAP está sendo executado dentro de um container, o backend converte o localhost para:
+
+```text
+http://host.docker.internal:3000
+```
+
+Isso permite que o container acesse a aplicação que está rodando no Windows.
+
+O campo de DAST é opcional. Caso nenhuma URL seja informada, o scan continua normalmente com Semgrep, Trivy e Gitleaks.
+
+## Pride Score
+
+Depois da normalização, os findings passam pelo cálculo do Pride Score.
+
+O objetivo é ajudar na priorização das vulnerabilidades, permitindo que os problemas mais importantes apareçam primeiro no dashboard.
+
+## Integração com IA
+
+O CodeShield possui integração com a API da Anthropic.
+
+A variável utilizada pelo backend é:
 
 ```env
 REACT_APP_ANTHROPIC_KEY=SUA_CHAVE
 ```
 
-> Nunca envie `backend/.env` ou chaves de API para o Git.
+A IA é utilizada para:
 
-## Executando o projeto
+- sugerir correções;
+- auxiliar na interpretação dos findings;
+- responder perguntas no chatbot da plataforma.
 
-### 1. Infraestrutura
+A chave deve ficar apenas no arquivo:
 
-Na raiz:
+```text
+backend/.env
+```
+
+Esse arquivo não deve ser enviado ao GitHub.
+
+## Validação determinística de fix
+
+Uma das principais implementações desta etapa foi a criação de uma PoC para validar correções sugeridas pela IA em findings do Semgrep.
+
+O processo funciona da seguinte forma:
+
+```text
+1. O Semgrep confirma a vulnerabilidade no arquivo original.
+2. A IA gera uma sugestão de correção.
+3. A correção é aplicada somente em uma cópia temporária.
+4. O código Python corrigido passa por validação com AST.
+5. O Semgrep é executado novamente.
+6. O sistema verifica se a mesma rule_id continua existindo.
+```
+
+O resultado pode ser:
+
+```text
+FIX VALIDADO
+FIX REPROVADO
+VALIDAÇÃO INCONCLUSIVA
+```
+
+Um ponto importante é que o CodeShield **não executa o código gerado pela IA** durante essa validação.
+
+A validação utiliza análise estática, AST e re-scan com o Semgrep.
+
+## Histórico de scans
+
+Cada execução recebe um identificador próprio:
+
+```text
+scan_id
+```
+
+Os findings são associados ao scan correspondente e salvos no PostgreSQL.
+
+Dessa forma, o sistema consegue manter o histórico das análises sem precisar apagar automaticamente os findings anteriores.
+
+## Como executar
+
+### Docker
+
+Na raiz do projeto:
 
 ```powershell
 cd C:\Users\caiqu\CodeShield-ASPM
@@ -155,7 +263,7 @@ docker compose up -d
 docker compose ps
 ```
 
-### 2. Backend
+### Backend
 
 ```powershell
 cd C:\Users\caiqu\CodeShield-ASPM\backend
@@ -175,7 +283,7 @@ Swagger:
 http://127.0.0.1:8000/docs
 ```
 
-### 3. Frontend
+### Frontend
 
 Em outro terminal:
 
@@ -190,91 +298,23 @@ Frontend:
 http://localhost:3000
 ```
 
-## Executando um scan
+## Exemplo de scan
 
-Na interface, informe:
+No dashboard podem ser informados:
 
 ```text
-Repositório Git:
+Repositório:
 https://github.com/usuario/repositorio
 
 Target DAST:
 http://localhost:3000
 ```
 
-O target DAST é opcional. Se estiver vazio, o ZAP não é executado.
-
-Fluxo:
-
-```text
-repo_url
- ├─ Semgrep
- ├─ Trivy
- └─ Gitleaks
-
-target_url
- └─ OWASP ZAP
-```
-
-## OWASP ZAP
-
-O CodeShield utiliza a imagem:
-
-```text
-ghcr.io/zaproxy/zaproxy:stable
-```
-
-O scan inicial usa **ZAP Baseline**, com crawling e análise passiva, sem executar um Active Scan agressivo.
-
-Para aplicações locais, o backend converte:
-
-```text
-http://localhost:3000
-```
-
-para:
-
-```text
-http://host.docker.internal:3000
-```
-
-dentro do container Docker.
-
-## Validação determinística de correção
-
-O processo de validação de um finding Semgrep é:
-
-```text
-Vulnerabilidade original
-        │
-        ▼
-Baseline Semgrep
-        │
-        ▼
-rule_id confirmada
-        │
-        ▼
-Sugestão de fix pela IA
-        │
-        ▼
-Cópia temporária do arquivo
-        │
-        ▼
-Validação AST
-        │
-        ▼
-Re-scan Semgrep
-        │
-        ├── rule_id desapareceu → FIX VALIDADO
-        │
-        └── rule_id permaneceu  → FIX REPROVADO
-```
-
-A validação não executa o código gerado pela IA.
+O scan executa os scanners correspondentes e, ao final, exibe os resultados no dashboard.
 
 ## Resultado do teste final
 
-Em uma execução de validação final do projeto:
+Durante o teste final realizado no projeto, o resultado foi:
 
 | Scanner | Tipo | Findings |
 |---|---|---:|
@@ -284,41 +324,39 @@ Em uma execução de validação final do projeto:
 | OWASP ZAP | DAST | 14 |
 | **Total** |  | **101** |
 
-O resultado confirma a execução ponta a ponta da esteira e a persistência dos findings no CodeShield.
+Esse resultado confirmou que os quatro scanners estavam funcionando dentro da mesma execução e que os findings estavam sendo salvos e exibidos pela plataforma.
 
-> Os números podem variar conforme o repositório, dependências, versões dos scanners e aplicação analisada.
+Os valores podem mudar dependendo do repositório, das dependências, da aplicação analisada e das versões das ferramentas.
 
-## Segurança operacional
+## Cuidados importantes
 
-- Não execute código gerado pela IA.
-- Não faça DAST em sistemas sem autorização.
-- Não versione `.env`.
-- Não versione chaves, tokens ou credenciais.
-- O ZAP deve receber apenas aplicações que você tem autorização para testar.
-- Findings do Gitleaks devem ser tratados como possíveis exposições até validação manual.
+- não enviar o arquivo `.env` para o GitHub;
+- não armazenar chaves de API diretamente no código;
+- executar DAST somente em aplicações autorizadas;
+- não executar automaticamente código produzido pela IA;
+- analisar manualmente possíveis secrets encontrados pelo Gitleaks.
 
-## Estado atual
+## Estado atual do projeto
 
 ```text
-SAST / Semgrep        ✅
-SCA / Trivy           ✅
-Secrets / Gitleaks    ✅
-DAST / OWASP ZAP      ✅
-Pride Score           ✅
-PostgreSQL            ✅
-Histórico de scans    ✅
-PoC determinística    ✅
-Frontend              ✅
-Claude                ✅ integração implementada
+Semgrep / SAST        funcionando
+Trivy / SCA           funcionando
+Gitleaks / Secrets    funcionando
+OWASP ZAP / DAST      funcionando
+Pride Score           funcionando
+PostgreSQL            funcionando
+Histórico de scans    funcionando
+Validação de fix      funcionando
+Frontend              funcionando
+Claude                integração implementada
 ```
 
-A disponibilidade da Claude depende de uma chave válida e de créditos na conta Anthropic.
+A utilização do Claude depende de uma chave válida e de créditos disponíveis na conta Anthropic.
 
-## Objetivo acadêmico
+## Conclusão
 
-A evolução implementada expande a plataforma de uma análise predominantemente SAST para uma esteira ASPM com múltiplas fontes de evidência e adiciona uma PoC de validação determinística de correções sugeridas por IA.
+Com as alterações realizadas nesta etapa, o CodeShield passou a ter uma cobertura de segurança maior do que a versão inicial.
 
-Isso permite demonstrar dois pontos principais da entrega:
+Além da análise estática com Semgrep, agora o projeto também analisa dependências, possíveis segredos e uma aplicação em execução.
 
-1. **Ampliação da cobertura de segurança:** SAST + SCA + Secrets + DAST.
-2. **Validação de fix:** a sugestão da IA não é aceita apenas por confiança no modelo; ela é submetida a verificações estáticas e re-scan determinístico.
+A PoC de validação de fix também adiciona uma camada de verificação sobre as respostas geradas pela IA, evitando considerar uma correção como válida apenas porque ela foi sugerida pelo modelo.

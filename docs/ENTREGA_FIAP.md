@@ -1,132 +1,229 @@
-# CodeShield ASPM — Resumo da Entrega FIAP / Pride Security
+# CodeShield ASPM — Entrega FIAP / Pride Security
 
-## 1. Objetivo
+## Introdução
 
-A entrega teve dois objetivos centrais:
+Nesta etapa do FIAP Challenge, o nosso trabalho foi continuar o desenvolvimento do **CodeShield ASPM**, uma plataforma voltada para centralização e priorização de vulnerabilidades encontradas em aplicações.
 
-1. expandir a esteira do CodeShield além de SAST;
-2. implementar uma PoC determinística para validar correções sugeridas por IA.
+O projeto já possuía uma base funcional com backend em FastAPI, frontend em React, banco PostgreSQL e análise SAST com Semgrep.
 
-## 2. O que foi adicionado
+A partir dessa base, o foco da etapa foi principalmente ampliar a esteira de segurança e desenvolver uma forma de validar algumas correções sugeridas por inteligência artificial.
 
-### SCA com Trivy
+## Objetivos da etapa
 
-Foi adicionado um scanner de composição de software para identificar vulnerabilidades conhecidas em dependências.
+Os dois objetivos principais foram:
 
-Fluxo:
+1. ampliar a análise do CodeShield para além de SAST;
+2. criar uma prova de conceito para validação determinística de correções.
 
-```text
-Repositório
-→ Trivy
-→ normalização
-→ Pride Score
-→ PostgreSQL
-→ frontend
-```
-
-### Secrets Scanning com Gitleaks
-
-O clone passou a preservar o histórico Git completo para que o Gitleaks também consiga detectar segredos existentes em commits anteriores.
-
-Fluxo:
+Ao final da implementação, a plataforma passou a trabalhar com:
 
 ```text
-Histórico Git
-→ Gitleaks
-→ normalização
-→ Pride Score
-→ PostgreSQL
-→ frontend
+SAST
+SCA
+Secrets Scanning
+DAST
 ```
 
-### DAST com OWASP ZAP
+Além disso, foi adicionada a validação de fix para findings do Semgrep.
 
-Foi integrado o OWASP ZAP Baseline por Docker.
+## SAST com Semgrep
 
-O usuário informa separadamente:
+O Semgrep já fazia parte da estrutura do projeto e continuou sendo utilizado para análise estática.
+
+Durante o desenvolvimento, o scanner foi ajustado para trabalhar com múltiplas configurações e remover findings duplicados.
+
+No teste final foram encontrados:
 
 ```text
-repo_url   → scanners de repositório
-target_url → OWASP ZAP
+20 findings SAST
 ```
 
-Isso evita tentar executar DAST contra a URL do GitHub.
+## SCA com Trivy
 
-Para desenvolvimento local:
+Para expandir a esteira foi integrado o Trivy.
+
+O objetivo foi identificar vulnerabilidades conhecidas nas dependências do projeto.
+
+Os resultados do Trivy são normalizados para o mesmo padrão utilizado pelos demais findings e depois passam pelo Pride Score.
+
+No teste final:
 
 ```text
-localhost
-→ host.docker.internal
+66 findings SCA
 ```
 
-dentro do container ZAP.
+## Secrets Scanning com Gitleaks
 
-O primeiro nível usa Baseline/passive scan, evitando Active Scan agressivo nesta etapa.
+Também foi integrado o Gitleaks para procurar possíveis segredos expostos.
 
-### Validação determinística de fix
+Uma mudança importante foi fazer o clone do repositório mantendo o histórico completo do Git.
 
-Foi criada uma PoC para findings Semgrep:
+Isso é necessário porque um segredo pode ter sido removido do arquivo atual, mas continuar registrado em um commit antigo.
+
+No teste final:
 
 ```text
-1. confirmar a rule_id no arquivo original;
-2. obter a sugestão de correção;
-3. aplicar a alteração somente em cópia temporária;
-4. validar sintaxe/estrutura Python com AST;
-5. executar novamente o Semgrep;
-6. verificar se a mesma rule_id desapareceu.
+1 finding de Secrets
 ```
 
-Resultados possíveis:
+## DAST com OWASP ZAP
+
+Para adicionar análise dinâmica, foi utilizado o OWASP ZAP.
+
+Optamos inicialmente pelo **ZAP Baseline**, executado por Docker.
+
+O usuário pode informar uma URL de aplicação separada da URL do repositório.
+
+Exemplo:
 
 ```text
-FIX VALIDADO
-FIX REPROVADO
-VALIDAÇÃO INCONCLUSIVA
+repo_url:
+https://github.com/usuario/repositorio
+
+target_url:
+http://localhost:3000
 ```
 
-O código gerado pela IA não é executado.
+Essa separação é importante porque o DAST precisa analisar uma aplicação em execução, e não o endereço do repositório Git.
 
-## 3. Integração com frontend
+Quando o target utiliza localhost, o backend converte a URL para:
 
-O dashboard passou a exibir separadamente:
+```text
+http://host.docker.internal:3000
+```
 
-- SAST;
-- SCA;
-- Secrets;
-- DAST;
-- quantidade por severidade;
-- Pride Score;
-- origem do finding;
-- estado de validação do fix.
+dentro do container.
 
-Também foi adicionado um campo separado para o target DAST.
+No teste final:
 
-## 4. Persistência e histórico
+```text
+14 findings DAST
+```
 
-Cada scan recebe um `scan_id`.
+## Normalização dos findings
 
-Os findings são armazenados no PostgreSQL e associados à execução correspondente, permitindo consultar scans anteriores sem apagar automaticamente os resultados.
+Os findings das ferramentas são convertidos para uma estrutura comum.
 
-## 5. IA
+Entre os dados armazenados estão:
 
-A integração com Anthropic Claude permanece no backend.
+```text
+fonte
+rule_id
+severity
+file_path
+line
+message
+pride_score
+ai_fix
+fix_validado
+scan_id
+```
 
-A chave é lida de:
+Isso permite que resultados de scanners diferentes sejam apresentados juntos no dashboard.
+
+## Pride Score
+
+Depois da normalização, cada finding recebe um Pride Score.
+
+Esse score é utilizado para ajudar na priorização dos problemas encontrados.
+
+No frontend, os findings podem ser analisados junto com a severidade, origem, regra, arquivo e recomendação de correção.
+
+## Integração com IA
+
+A plataforma possui integração com Anthropic Claude.
+
+A IA é utilizada principalmente para gerar sugestões de correção e para o chatbot do CodeShield.
+
+A variável de ambiente utilizada pelo projeto é:
 
 ```env
 REACT_APP_ANTHROPIC_KEY
 ```
 
-A IA é utilizada para:
+A chave fica no backend e não deve ser versionada.
 
-- gerar recomendações de correção;
-- responder perguntas contextualizadas sobre findings.
+Durante os testes finais, a integração estava implementada, porém algumas chamadas não puderam ser executadas porque a conta da API estava sem créditos. Isso não impediu a execução dos scanners.
 
-A PoC determinística reduz a dependência de confiança direta na resposta do modelo.
+## PoC de validação determinística de fix
 
-## 6. Evidência do teste final
+Outra parte importante da entrega foi a criação de uma prova de conceito para validar correções de findings do Semgrep.
 
-Execução final:
+O problema que queríamos evitar era considerar qualquer resposta da IA como correta sem verificar o resultado.
+
+Por isso, o processo de validação foi desenvolvido da seguinte forma:
+
+```text
+Finding original
+→ confirmação da rule_id no Semgrep
+→ geração da correção
+→ aplicação em uma cópia temporária
+→ validação com AST
+→ novo scan do Semgrep
+→ comparação do resultado
+```
+
+Caso a mesma `rule_id` desapareça após a alteração, o fix pode ser marcado como:
+
+```text
+FIX VALIDADO
+```
+
+Caso continue presente:
+
+```text
+FIX REPROVADO
+```
+
+Se não for possível concluir a validação:
+
+```text
+VALIDAÇÃO INCONCLUSIVA
+```
+
+O código sugerido pela IA não é executado durante o teste.
+
+## Frontend
+
+O frontend foi atualizado para mostrar os diferentes tipos de análise separadamente.
+
+Foram adicionados indicadores para:
+
+```text
+SAST
+SCA
+SECRETS
+DAST
+```
+
+Também foi criado um campo próprio para informar o target do OWASP ZAP.
+
+Na tabela de findings é possível identificar a origem de cada resultado, por exemplo:
+
+```text
+SAST · Semgrep
+SCA · Trivy
+SECRETS · Gitleaks
+DAST · OWASP ZAP
+```
+
+Para findings do Semgrep que possuem correção gerada pela IA, o frontend também pode mostrar o resultado da validação.
+
+## Histórico e banco de dados
+
+Os resultados são armazenados no PostgreSQL.
+
+Cada nova análise recebe um:
+
+```text
+scan_id
+```
+
+Dessa forma, os findings podem ser associados a uma execução específica e o sistema consegue manter o histórico de scans.
+
+## Resultado do teste final
+
+No teste final realizado no projeto, obtivemos:
 
 ```text
 Semgrep  (SAST):     20
@@ -136,9 +233,13 @@ OWASP ZAP (DAST):    14
 Total:              101
 ```
 
-O scan concluiu com os 101 findings persistidos.
+Os 101 findings foram processados e salvos pela aplicação.
 
-## 7. Arquivos principais criados ou alterados
+Esse teste confirmou o funcionamento conjunto dos quatro scanners.
+
+## Principais arquivos criados ou alterados
+
+Durante esta etapa, os principais arquivos envolvidos foram:
 
 ```text
 backend/app/api/scans.py
@@ -156,25 +257,23 @@ frontend/src/App.tsx
 frontend/src/api/pride.ts
 ```
 
-## 8. Resultado
+## O que demonstrar na apresentação
 
-A plataforma deixa de depender apenas de análise estática e passa a correlacionar diferentes classes de evidência:
+Na apresentação, os pontos mais importantes são:
 
-```text
-SAST + SCA + Secrets + DAST
-```
+1. mostrar o dashboard com os quatro tipos de scanner;
+2. explicar a diferença entre a URL do repositório e o target DAST;
+3. mostrar findings de fontes diferentes;
+4. explicar o Pride Score;
+5. mostrar um caso de `FIX VALIDADO` e um caso de `FIX REPROVADO`;
+6. explicar que a validação não executa o código gerado pela IA;
+7. mostrar que cada execução recebe um `scan_id`;
+8. apresentar o resultado final do scan com 101 findings.
 
-Além disso, a correção sugerida por IA pode passar por validação objetiva antes de ser considerada válida.
+## Conclusão
 
-## 9. Pontos para demonstração
+A principal evolução desta etapa foi transformar o CodeShield em uma esteira de segurança mais completa.
 
-Durante a apresentação:
+Antes, a análise estava concentrada principalmente em SAST. Com as novas integrações, o projeto passou a analisar também dependências, possíveis segredos e a aplicação em execução.
 
-1. mostrar os quatro cards de scanners no dashboard;
-2. explicar a diferença entre `repo_url` e `target_url`;
-3. mostrar um finding de cada fonte;
-4. mostrar o Pride Score;
-5. demonstrar `FIX VALIDADO` e `FIX REPROVADO`;
-6. enfatizar que o código da IA não é executado;
-7. mostrar o histórico por `scan_id`;
-8. apresentar o resultado final de 101 findings.
+Além disso, a PoC de validação determinística permite demonstrar uma abordagem mais segura para o uso de IA, pois uma correção pode ser verificada antes de ser considerada válida.
