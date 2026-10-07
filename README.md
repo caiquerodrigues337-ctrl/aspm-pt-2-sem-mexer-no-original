@@ -1,5 +1,10 @@
 # CodeShield ASPM
 
+
+
+INTEGRANTES DA CODESHIELD: MAICK ROSARIO YAMASSAKI RM569664 / Caíque dos Santos Rodrigues RM570577 / Davi Almeida Nascimento RM569447 / Amanda Souza Bezerra	RM573911
+
+
 O **CodeShield ASPM** é um projeto acadêmico desenvolvido para o FIAP Challenge em parceria com a Pride Security. A proposta do projeto é reunir diferentes tipos de análise de segurança em uma única plataforma, facilitando a identificação, priorização e acompanhamento de vulnerabilidades em aplicações.
 
 Nesta etapa do projeto, a plataforma foi ampliada para trabalhar com **SAST, SCA, Secrets Scanning e DAST**, além de uma prova de conceito para validar de forma determinística algumas correções sugeridas por inteligência artificial.
